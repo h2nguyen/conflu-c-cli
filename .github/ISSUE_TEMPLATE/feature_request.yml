@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest an improvement or a new command
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the idea. Please read what the project is for in [CONTRIBUTING.md](https://github.com/h2nguyen/conflu-c-cli/blob/main/CONTRIBUTING.md):
+        standard library only, Confluence Cloud only, safe and private by default, a stable interface.
+
+        **Do not paste tokens, e-mail addresses, the name of your site or the text of your pages.**
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way? The problem matters more than the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How could the CLI help? A sketch of the command line and the output is welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today
+      description: A workaround, another command, or `conflu api`, and why it is not enough.
+  - type: dropdown
+    id: help
+    attributes:
+      label: Would you like to build it?
+      options:
+        - "No, I would like someone else to"
+        - "Yes, with some guidance"
+        - "Yes, I can do it"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues for the same idea.
+          required: true
+        - label: The idea needs no third-party dependency and keeps the safe and private defaults.
+          required: true

@@ -1,0 +1,66 @@
+name: Bug report
+description: Something does not work as documented
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report.
+
+        **Do not paste tokens, e-mail addresses, the name of your site or the text of your pages.** Replace them with
+        placeholders such as `example.atlassian.net` and `ENG`.
+
+        A security problem? Do not open an issue. Follow the [security policy](https://github.com/h2nguyen/conflu-c-cli/security/policy).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `conflu version`.
+      placeholder: conflu-c-cli 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and Python
+      description: For example "Windows 11, Python 3.13" or "Ubuntu 24.04, Python 3.11". `conflu version --json` shows the Python version and the platform.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The command
+      description: The command line you ran, with placeholders instead of real values, and its exit code.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: The output or the error, with secrets and real content removed.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of conflu doctor (optional)
+      description: Helps with connection problems. Check it for the name of your site before you paste it.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I removed tokens, e-mail addresses, site names and page content from this report.
+          required: true
+        - label: I searched the existing issues for the same problem.
+          required: true

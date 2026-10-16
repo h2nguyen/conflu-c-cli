@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/h2nguyen/conflu-c-cli/security/advisories/new
+    about: Report a vulnerability privately. Please do not open a public issue for it.
+  - name: Read the guides
+    url: https://github.com/h2nguyen/conflu-c-cli/tree/main/docs
+    about: Guides and references for every command. The same text is available offline with `conflu how-to`.
