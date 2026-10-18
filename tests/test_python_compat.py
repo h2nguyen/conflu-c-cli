@@ -59,6 +59,10 @@ class SyntaxTest(unittest.TestCase):
                 except SyntaxError as error:
                     self.fail(f"{relative(path)}:{error.lineno}: {error.msg}")
 
+    @unittest.skipUnless(
+        hasattr(tokenize, "FSTRING_START"),
+        "before 3.12 the tokenizer returns an f-string as one STRING token, and the parser itself rejects the 3.12 forms",
+    )
     def test_no_f_string_needs_python_3_12(self):
         """3.12 allows the outer quote and backslashes inside the braces of an f-string; 3.10 does not."""
         for path in python_files():
