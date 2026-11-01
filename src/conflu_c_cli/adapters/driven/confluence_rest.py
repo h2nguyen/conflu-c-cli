@@ -1,17 +1,17 @@
 """The Confluence port implemented over Confluence Cloud's REST APIs.
 
-Pages, spaces, comments, versions and attachments are read and written through API v2 (`/api/v2`). A few things have no
-v2 equivalent and use the older API (`/rest/api`): search with CQL, the current user, adding and removing labels,
-uploading attachments and moving a page.
+API v2 (`/api/v2`) is the default: pages, spaces, comments, versions, attachment reads and most of the rest. The older API v1
+(`/rest/api`) is used only where v2 has no equivalent, and every such call is named in `V1_CALLS` with its reason: search with CQL, the
+current user, adding and removing labels, uploading and downloading the file of an attachment, and moving a page before or after another.
+The feature areas are mixins (`rest_*.py`) of `RestConfluenceGateway`; what they share is in `rest_support.py`.
 """
 from __future__ import annotations
 
 import base64
 import json
-import mimetypes
 import re
 import urllib.parse
-import uuid
+from dataclasses import replace
 from typing import Any, Sequence
 
 from ...application.paging import fetch_all
@@ -20,11 +20,13 @@ from ...application.settings import Settings, is_local_host
 from ...domain.errors import (
     AuthError,
     ConfigError,
+    ConfluCliError,
     ConflictError,
     NotFoundError,
     RejectedError,
     UnavailableError,
 )
+from ...domain.errortext import redact_error_text, redact_error_value
 from ...domain.model import (
     Attachment,
     Chunk,
@@ -39,127 +41,213 @@ from ...domain.model import (
     VersionInfo,
 )
 from ...domain.privacy import strip_users
+from ...domain.structure import shown_key
 from . import confluence_mapper as mapper
 from .http_transport import HttpResponse, HttpTransport
+from .rest_access import RestAccess
+from .rest_attachments import RestAttachments, name_of
+from .rest_blogposts import RestBlogposts
+from .rest_comments import RestComments
+from .rest_history import RestHistory
+from .rest_labels import RestLabels
+from .rest_properties import RestProperties
+from .rest_setup import RestSetup
+from .rest_structure import RestStructure
+from .rest_support import V1, V2
+from .rest_support import messages as _messages
+from .rest_support import multipart as _multipart
+from .rest_support import next_cursor
+from .rest_support import query as _query
+from .rest_support import quote as _quote
+from .rest_support import request_target as _request_target
+from .rest_support import without_secrets as _without_secrets
+from .rest_tasks import RestTasks
+from .rest_templates import RestTemplates
+from .rest_users import RestUsers
+from .rest_watches import RestWatches
 
-V2 = "/api/v2"
-V1 = "/rest/api"
 BULK_USERS = 250
+BULK_PAGES = 250  # what `id` and `limit` of the list of pages take at most
 SEARCH_EXPAND = "content.ancestors,content.metadata.labels,content.version"  # where a hit lives, how it is tagged, its version
 
-
-def _quote(value: str) -> str:
-    return urllib.parse.quote(str(value), safe="")
-
-
-def _request_target(path: str) -> str:
-    """A path and query as a person typed them, made fit for a request line: the fragment goes (no server ever sees one),
-    a space, a quote or a non-ASCII character becomes %XX, and an escape that is there already stays as it is."""
-    path = re.sub(r"%(?![0-9A-Fa-f]{2})", "%25", path.split("#", 1)[0])
-    return urllib.parse.quote(path, safe="%!$&'()*+,/:;=?@[]~-._")
-
-
-def _query(**params: Any) -> str:
-    """A query string from the parameters that have a value (`True` becomes `true`)."""
-    pairs = []
-    for name, value in params.items():
-        if value is None or value == "" or (isinstance(value, (list, tuple)) and not value):
-            continue
-        text = "true" if value is True else "false" if value is False else ",".join(map(str, value)) if isinstance(value, (list, tuple)) else str(value)
-        pairs.append((name.replace("_", "-"), text))
-    return urllib.parse.urlencode(pairs, quote_via=urllib.parse.quote)
+# The calls of this module that use the v1 API, each with why: v2 is the API to use, and v1 only where v2 has nothing for it. The
+# keys are the calls as `tests/support/confluence_cloud_v1_endpoints.txt` writes them; a test sweeps every command, holds this table
+# against the calls that were really made and against the v1 document, and `docs/reference/compatibility.md` repeats it.
+V1_CALLS: dict[str, str] = {
+    "GET /rest/api/user/current": "v2 has no call for the user who owns the token.",
+    "GET /rest/api/search": "v2 has no CQL search.",
+    "POST /rest/api/content/{id}/label": "v2 reads the labels of content and has no call that adds one.",
+    "DELETE /rest/api/content/{id}/label/{label}": "v2 reads the labels of content and has no call that removes one.",
+    "PUT /rest/api/content/{id}/child/attachment": "v2 reads attachments and has no upload.",
+    "GET /rest/api/content/{id}/child/attachment/{attachmentId}/download": "v2 describes an attachment but has no call that serves its file.",
+    "PUT /rest/api/content/{pageId}/move/{position}/{targetId}": "v2 can only put a page below another parent, by saving a new version of it: before and after another page need this call.",
+}
 
 
-def _messages(body: Any) -> str:
-    """Confluence's own explanation of a refusal, in the shapes both APIs use."""
-    if not isinstance(body, dict):
-        return ""
-    parts: list[str] = []
-    errors = body.get("errors")
-    if isinstance(errors, list):
-        for item in errors:
-            if isinstance(item, dict):
-                text = item.get("detail") or item.get("title") or item.get("message")
-                if isinstance(text, dict):
-                    text = text.get("translation") or text.get("key")
-                if text:
-                    parts.append(str(text))
-            elif item:
-                parts.append(str(item))
-    data = body.get("data")
-    if isinstance(data, dict) and isinstance(data.get("errors"), list):
-        for item in data["errors"]:
-            text = item.get("message") if isinstance(item, dict) else item
-            if isinstance(text, dict):
-                text = text.get("translation") or text.get("key")
-            if text:
-                parts.append(str(text))
-    for key in ("message", "reason"):
-        if isinstance(body.get(key), str) and body[key] and body[key] not in parts:
-            parts.append(body[key])
-    return "; ".join(dict.fromkeys(parts))
+def _whole(value: Any, what: str) -> int:
+    """A count or a position that an answer holds. What is not a whole number (`"many"`, `null`, `1e999`) is a damaged answer, not a mistake of the person."""
+    try:
+        number = int(value)
+        if not -(2**63) <= number < 2**63:
+            raise OverflowError("not a number of the API")
+        return number
+    except (ValueError, TypeError, OverflowError):
+        raise UnavailableError(
+            f"Confluence answered with {what} that is not a number.",
+            hint="Try again. If it stays, something between you and Confluence is changing its answers.",
+        ) from None
 
 
-def _without_secrets(value: Any, secrets: Sequence[str]) -> Any:
-    """The value with every occurrence of a secret replaced, in strings at any depth."""
-    usable = [secret for secret in secrets if len(secret) >= 6]  # too short to be a secret; replacing it would only damage the text
-    if not usable:
-        return value
+_MEDIA_TYPE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,60}/[a-z0-9][a-z0-9!#$&^_.+-]{0,60}")
+_IN_THE_WAY = "A proxy, a captive portal or a login page between you and Confluence may have answered in its place: check the VPN and CONFLUENCE_BASE_URL (`conflu doctor` checks the connection), then try again."
+_IN_THE_WAY_OF_A_WRITE = (
+    "A proxy, a captive portal or a login page between you and Confluence may have answered in its place, and the change may have been made all the same: "
+    "look at the result (`conflu page ID`, `conflu comments PAGE`, `conflu attachments PAGE`, `conflu properties ID`) before you repeat it, and check the VPN and "
+    "CONFLUENCE_BASE_URL (`conflu doctor` checks the connection)."
+)
+
+
+def _media_type(response: HttpResponse) -> str:
+    """The media type that an answer says it has (`text/html`), when what it says looks like one: it is the server's text, and a message shows it."""
+    found = response.headers.get("content-type", "").partition(";")[0].strip().lower()
+    return found if _MEDIA_TYPE.fullmatch(found) else ""
+
+
+def _kind_of(value: Any) -> str:
+    """What a JSON value is, in words, for the message about an answer of the wrong kind."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true or false"
+    if isinstance(value, (int, float)):
+        return "a number"
     if isinstance(value, str):
-        for secret in usable:
-            value = value.replace(secret, "********")
-        return value
-    if isinstance(value, dict):
-        return {key: _without_secrets(item, usable) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_without_secrets(item, usable) for item in value]
-    return value
+        return "a text"
+    return "a list" if isinstance(value, list) else "something else"
 
 
-def _multipart(fields: dict[str, str], filename: str, data: bytes) -> tuple[bytes, str]:
-    """A multipart/form-data body with the text fields and one file; its content type carries the boundary."""
-    boundary = "----conflu" + uuid.uuid4().hex
-    safe_name = re.sub(r'[\r\n"]', "_", filename)
-    guessed = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
-    parts: list[bytes] = []
-    for name, value in fields.items():
-        parts.append(
-            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode("utf-8")
-        )
-    parts.append(
-        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{safe_name}"\r\nContent-Type: {guessed}\r\n\r\n'.encode("utf-8")
-        + data
-        + b"\r\n"
+_NOTHING = object()  # "no value was read", where `None` is the JSON `null`
+MAX_RESULTS = 1000  # the most that a list answer holds: the documents allow 250 (v2) and 100 (v1) to a request, so more is not an answer of Confluence
+MAX_OBJECTS = 250_000  # the JSON objects in all of one answer: a page, its labels and versions, 250 of them, make a few thousand
+
+
+class _TooManyObjects(Exception):
+    """Raised while an answer is decoded, as soon as it holds more objects (or arrays) than `MAX_OBJECTS` allows: the memory that a list of objects takes
+    is not bounded by the size of the text (400,000 empty objects are 1.2 MB, and cost half a gigabyte once they are mapped)."""
+
+
+class _ObjectCount:
+    def __init__(self) -> None:
+        self.count = 0
+
+    def __call__(self, item: dict[str, Any]) -> dict[str, Any]:
+        self.count += 1
+        if self.count > MAX_OBJECTS:
+            raise _TooManyObjects()
+        return item
+
+
+def _unreadable(response: HttpResponse, details: dict[str, Any], error: ValueError | None = None, *, found: Any = _NOTHING) -> UnavailableError:
+    """The error for a success that holds nothing that can be read. `{}` in its place would be an empty result, and a list that looks empty, a page
+    that is blank or a connection that is `OK` is what a damaged answer must never be taken for. No text of the answer is in the message. `found` is
+    the JSON that was read when it is of another kind than the call needs (an object): a list, `null`, a number."""
+    status = response.status
+    # What a proxy answered to a write may have been done by Confluence all the same: the hint of a read says "try again", that of a write says to look first.
+    in_the_way = _IN_THE_WAY if str(details.get("request", "GET")).startswith("GET") else _IN_THE_WAY_OF_A_WRITE
+    if error is None and found is not _NOTHING:
+        return UnavailableError(f"Confluence answered HTTP {status} with {_kind_of(found)}, where a JSON object was expected.", hint=in_the_way, details=details)
+    if error is None:
+        return UnavailableError(f"Confluence answered HTTP {status} with an empty body, where an answer with data was expected.", hint=in_the_way, details=details)
+    if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError)):
+        media = _media_type(response)
+        named = f" ({media})" if media else ""
+        return UnavailableError(f"Confluence answered HTTP {status} with something that is not JSON{named}.", hint=in_the_way, details=details)
+    return UnavailableError(  # what else the decoder refuses is a number of more than 4,300 digits, which it will not turn into an integer
+        f"Confluence answered HTTP {status} with a number that is too long to be read (more than 4,300 digits).",
+        hint="A value that somebody stored (a content property, for example) is the usual cause: it cannot be shown by this program.",
+        details=details,
     )
-    parts.append(f"--{boundary}--\r\n".encode("ascii"))
-    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
-class RestConfluenceGateway(ConfluenceGateway):
+class RestConfluenceGateway(
+    RestStructure,
+    RestBlogposts,
+    RestHistory,
+    RestComments,
+    RestLabels,
+    RestAttachments,
+    RestAccess,
+    RestWatches,
+    RestUsers,
+    RestTasks,
+    RestProperties,
+    RestTemplates,
+    RestSetup,
+    ConfluenceGateway,
+):
     def __init__(self, settings: Settings, transport: HttpTransport) -> None:
         self._settings = settings
         self._transport = transport
 
     # -- plumbing ---------------------------------------------------------------------------
 
-    def _call(self, method: str, path: str, body: Any = None, *, timeout: float | None = None, retries: int | None = None) -> Any:
+    def _call(self, method: str, path: str, body: Any = None, *, timeout: float | None = None, retries: int | None = None, expect: str = "object") -> Any:
         payload = None if body is None else json.dumps(body).encode("utf-8")
         response = self._transport.request(method, path, body=payload, timeout=timeout, retries=retries)
-        return self._finish(response, method, path)
+        return self._finish(response, method, path, expect)
 
-    def _finish(self, response: HttpResponse, method: str, path: str) -> Any:
-        decoded = self._decode(response)
+    def _finish(self, response: HttpResponse, method: str, path: str, expect: str = "object") -> Any:
+        decoded = self._decode(response, method, path.split("?")[0], expect)
         self._raise_for_status(response, decoded, method, path)
         return decoded
 
     @staticmethod
-    def _decode(response: HttpResponse) -> Any:
+    def _decode(response: HttpResponse, method: str = "", shown: str = "", expect: str = "any") -> Any:
+        """The JSON of an answer, of the kind that the call needs: `expect` is "object" (what every call needs that reads something or makes it: a list is
+        an object with `results`), "nothing" (a call whose success has no body to read: a label that is removed, a watch, a move; what comes is ignored, but it
+        must be JSON if there is any) or "any" (the raw API, which prints what the endpoint answers). A success that is not of that kind is an
+        `UnavailableError`, never `{}`: what is no JSON (a login page that a proxy answers with HTTP 200), JSON of another kind (`[]`, `null`), a number of
+        more than 4,300 digits (a content property can hold one), an empty body where there should be data. An empty answer would be a list that looks
+        empty, a page that is blank, a connection that is `OK`, a property that was "created". A refusal is the other way round: its status says what it was,
+        so a body of it that is no JSON is only an explanation that is not there."""
+        status = response.status
+        success = 200 <= status < 300
+        details = {"status": status, "request": f"{method} {shown}"} if method else {"status": status}
         if not response.body.strip():
+            if success and (expect == "object" or (expect == "any" and method == "GET" and status == 200)):
+                raise _unreadable(response, details)
             return {}
         try:
-            return json.loads(response.body.decode("utf-8"))
-        except ValueError:
+            text = response.body.decode("utf-8")
+            if text.count("[") > 8 * MAX_OBJECTS:  # arrays have no hook: a text made of `[]` is 2 bytes for 56 bytes of memory (an object counts as one of 8 here)
+                raise _TooManyObjects()
+            value = json.loads(text, object_hook=_ObjectCount())
+        except RecursionError:  # what somebody stored in a property can nest arrays far deeper than the decoder reads
+            raise UnavailableError(
+                "Confluence answered with JSON that nests arrays or objects too deeply to be read.",
+                hint="A value that somebody stored (a content property, for example) is the usual cause: it cannot be shown by this program.",
+                details={"status": response.status},
+            ) from None
+        except _TooManyObjects:
+            raise UnavailableError(
+                f"Confluence answered with more than {MAX_OBJECTS:,} JSON objects in one answer, which is not read.",
+                hint="Try again. If it stays, something between you and Confluence is changing its answers.",
+                details=details,
+            ) from None
+        except ValueError as error:
+            if success:
+                raise _unreadable(response, details, error) from None
             return {"_text": response.body.decode("utf-8", "replace")[:500]}
+        results = value.get("results") if isinstance(value, dict) else None
+        if isinstance(results, list) and len(results) > MAX_RESULTS:
+            raise UnavailableError(
+                f"Confluence answered with {len(results):,} results in one answer, where a request returns {MAX_RESULTS:,} at most.",
+                hint="Try again. If it stays, something between you and Confluence is changing its answers.",
+                details=details,
+            )
+        if success and expect == "object" and not isinstance(value, dict):
+            raise _unreadable(response, details, found=value)
+        return value
 
     def _scrub(self, value: Any) -> Any:
         """Confluence's explanation of a refusal ends up in our error output. Take the credentials out in case something
@@ -169,6 +257,31 @@ class RestConfluenceGateway(ConfluenceGateway):
         credentials = f"{self._settings.email}:{self._settings.api_token}".encode("utf-8")
         return _without_secrets(value, [self._settings.api_token, base64.b64encode(credentials).decode("ascii"), self._settings.email])
 
+    def _explanation(self, body: Any, status: int, method: str, shown: str) -> tuple[Any, str]:
+        """What Confluence said about a refusal, as it may be printed: the answer without credentials (and, under the policy that never prints people,
+        without the keys that name them) and the explanation that goes into the message of the error, without e-mail addresses, links to people and
+        account ids, which a sentence of the server may hold whatever the policy. An answer nested deeper than the scrubbing reads is a damaged answer."""
+        try:
+            body = self._scrub(body)
+            return body, redact_error_text(_messages(body))
+        except RecursionError:
+            raise UnavailableError(
+                f"Confluence answered with HTTP {status} and a body that nests arrays or objects too deeply to be read.",
+                hint="Try again. If it stays, something between you and Confluence is changing its answers.",
+                details={"status": status, "request": f"{method} {shown}"},
+            ) from None
+
+    def _answer_details(self, body: Any) -> dict[str, Any]:
+        """The answer of a refusal for the `details` of its error, for the one error that carries it. Not under the policy that never prints people: a
+        whole answer cannot be searched for every way that a person is written in it. Otherwise it is kept without the people that it names (a user object,
+        a person id: a name is not a pattern that a text redaction finds) and with its text redacted as the message is: nobody asked for the people in it."""
+        if self._settings.hide_users:
+            return {}
+        try:
+            return {"confluence": redact_error_value(strip_users(body))}
+        except RecursionError:  # too deep to copy: the message of the error stands without it
+            return {}
+
     def _custom_domain_hint(self) -> str:
         """API tokens are accepted on `SITE.atlassian.net` and on the gateway at api.atlassian.com, not on a company's own
         domain for the site: there the credentials are not read and Confluence answers as it does an anonymous caller."""
@@ -177,7 +290,8 @@ class RestConfluenceGateway(ConfluenceGateway):
             return ""
         return (
             f"{host} is not an atlassian.net address. If it is a custom domain of your Confluence Cloud site, API tokens are not accepted on it: "
-            f"open https://{host}/_edge/tenant_info in a browser, copy the cloudId it shows and run "
+            "run `conflu setup --discover`, which reads the public tenant information of the site (https://" + host + "/_edge/tenant_info) and proposes "
+            "the gateway address, or set it yourself with "
             "`conflu config set CONFLUENCE_BASE_URL https://api.atlassian.com/ex/confluence/CLOUD_ID`. "
         )
 
@@ -185,13 +299,19 @@ class RestConfluenceGateway(ConfluenceGateway):
         status = response.status
         if 200 <= status < 300:
             return
-        body = self._scrub(body)
-        reason = _messages(body)
         shown = path.split("?")[0]
+        body, reason = self._explanation(body, status, method, shown)
         details = {"status": status, "request": f"{method} {shown}"}
         if 300 <= status < 400:
-            target = urllib.parse.urlsplit(response.headers.get("location", ""))
-            where = f" to {target.netloc}{target.path}" if target.netloc or target.path else ""
+            try:
+                target = urllib.parse.urlsplit(response.headers.get("location", ""))
+            except ValueError:  # `Location: http://[`: an address that no parser takes is a damaged answer, not a mistake in CONFLUENCE_BASE_URL
+                raise UnavailableError(
+                    f"Confluence answered with a redirect (HTTP {status}) to an address that cannot be read.",
+                    hint="Try again. If it stays, something between you and Confluence (a proxy, a captive portal) is changing its answers.",
+                    details=details,
+                ) from None
+            where = redact_error_text(f" to {target.netloc}{target.path}") if target.netloc or target.path else ""
             raise ConfigError(
                 f"Confluence answered with a redirect (HTTP {status}){where} instead of data.",
                 hint="Check CONFLUENCE_BASE_URL: the address is probably wrong, or it lacks the /wiki (or is http instead of https).",
@@ -240,15 +360,14 @@ class RestConfluenceGateway(ConfluenceGateway):
                 hint="Try again in a moment; if it stays, check https://status.atlassian.com.",
                 details=details,
             )
-        raise RejectedError(f"Confluence refused the request (HTTP {status}): {reason or 'no explanation'}", details={**details, "confluence": body})
+        raise RejectedError(
+            f"Confluence refused the request (HTTP {status}): {reason or 'no explanation'}",
+            details={**details, **self._answer_details(body)},
+        )
 
     @staticmethod
     def _next_cursor(data: Any) -> str:
-        link = ((data or {}).get("_links") or {}).get("next") if isinstance(data, dict) else None
-        if not isinstance(link, str) or not link:
-            return ""
-        values = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query).get("cursor") or [""]
-        return values[0]
+        return next_cursor(data)
 
     def _base(self, data: Any) -> str:
         return mapper.base_of(data, self._settings.wiki_url)
@@ -283,7 +402,7 @@ class RestConfluenceGateway(ConfluenceGateway):
             found = mapper.results_of(data)
             if found:
                 return mapper.space_from(found[0], self._base(data))
-        raise NotFoundError(f"No space with the key {key}.", hint="`conflu spaces` lists the spaces you can see.", details={"space": key})
+        raise NotFoundError(f"No space with the key {shown_key(key)}.", hint="`conflu spaces` lists the spaces you can see.", details={"space": shown_key(key)})
 
     def get_space_by_id(self, space_id: str) -> Space:
         data = self._call("GET", f"{V2}/spaces/{_quote(space_id)}?{_query(description_format='plain')}")
@@ -294,7 +413,15 @@ class RestConfluenceGateway(ConfluenceGateway):
     def get_page(self, page_id: str, *, with_body: bool = True) -> Page:
         query = _query(include_labels=True, body_format="storage" if with_body else "")
         data = self._call("GET", f"{V2}/pages/{_quote(page_id)}?{query}")
-        return mapper.page_from(data, self._settings.wiki_url)
+        page = mapper.page_from(data, self._settings.wiki_url)
+        if mapper.labels_cut(data):  # the answer holds the first 50 labels only: the call that lists the labels reads them all
+            try:
+                page = replace(page, labels=self.list_labels(page_id))
+            except ConfluCliError:
+                # The page itself was read. The rest of its labels is a second call that can be refused or fail on its own: the page keeps the
+                # 50 labels it has and says so (`labels_incomplete`), as 1.0.0 showed the page (it asked for no more), instead of failing as a whole.
+                page = replace(page, labels_incomplete=True)
+        return page
 
     def list_pages(
         self,
@@ -320,14 +447,12 @@ class RestConfluenceGateway(ConfluenceGateway):
         return Chunk([mapper.page_from(item, base) for item in mapper.results_of(data)], self._next_cursor(data))
 
     def list_ancestors(self, page_id: str) -> list[PageRef]:
-        data = self._call("GET", f"{V2}/pages/{_quote(page_id)}/ancestors?{_query(limit=250)}")
-        ancestors = [item for item in mapper.results_of(data) if item.get("id")]
-        if not ancestors:
-            return []
-        titles = {
-            str(item.get("id")): str(item.get("title") or "")
-            for item in mapper.results_of(self._call("GET", f"{V2}/pages?{_query(id=[str(item['id']) for item in ancestors], limit=250)}"))
-        }
+        ancestors = self._ancestors("page", page_id)
+        titles: dict[str, str] = {}
+        for start in range(0, len(ancestors), BULK_PAGES):  # `id` of the list of pages takes at most 250
+            wanted = [str(item["id"]) for item in ancestors[start : start + BULK_PAGES]]
+            for item in mapper.results_of(self._call("GET", f"{V2}/pages?{_query(id=wanted, limit=BULK_PAGES)}")):
+                titles[str(item.get("id"))] = str(item.get("title") or "")
         return [PageRef(str(item["id"]), titles.get(str(item["id"]), ""), str(item.get("type") or "page")) for item in ancestors]
 
     def list_descendants(self, page_id: str, *, depth: int = 3, limit: int = 250, cursor: str = "") -> Chunk[TreeNode]:
@@ -352,7 +477,7 @@ class RestConfluenceGateway(ConfluenceGateway):
         return mapper.page_from(data, self._settings.wiki_url)
 
     def move_page(self, page_id: str, position: str, target_id: str) -> None:
-        self._call("PUT", f"{V1}/content/{_quote(page_id)}/move/{_quote(position)}/{_quote(target_id)}")
+        self._call("PUT", f"{V1}/content/{_quote(page_id)}/move/{_quote(position)}/{_quote(target_id)}", expect="nothing")  # what comes back is not read
 
     # -- comments ---------------------------------------------------------------------------
 
@@ -386,7 +511,7 @@ class RestConfluenceGateway(ConfluenceGateway):
         return [mapper.label_from(item) for item in mapper.results_of(data)]
 
     def remove_label(self, page_id: str, name: str) -> None:
-        self._call("DELETE", f"{V1}/content/{_quote(page_id)}/label/{_quote(name)}")
+        self._call("DELETE", f"{V1}/content/{_quote(page_id)}/label/{_quote(name)}", expect="nothing")  # HTTP 204: there is no body
 
     # -- attachments ------------------------------------------------------------------------
 
@@ -416,18 +541,24 @@ class RestConfluenceGateway(ConfluenceGateway):
         return mapper.attachment_from_content(results[0])
 
     def download_attachment(self, attachment: Attachment) -> bytes:
-        link = attachment.download_link
-        if not link and attachment.page_id:
+        # The file is asked for with the documented v1 call, built from the ids. The `downloadLink` of an answer is a web address, not
+        # a call of either document, and an address that came out of an answer is not what the credentials should be sent to: it
+        # is the last resort, for an attachment whose page is not known.
+        link = ""
+        if attachment.page_id:
             link = f"{V1}/content/{_quote(attachment.page_id)}/child/attachment/{_quote(attachment.id)}/download"
+        elif attachment.download_link:
+            link = attachment.download_link
         if not link:
-            raise NotFoundError(f"Confluence gave no download address for {attachment.title}.")
+            raise NotFoundError(f"Confluence gave no download address for {name_of(attachment)}.")
         if link.startswith(self._settings.wiki_url):
             link = link[len(self._settings.wiki_url) :]
         path = link if link.startswith("/") else "/" + link
         response = self._transport.download(path)
-        if response.status != 200:
-            self._raise_for_status(response, self._decode(response), "GET", path.split("?")[0])
-            raise UnavailableError(f"Confluence did not send {attachment.title} (HTTP {response.status}).")
+        if response.status != 200:  # a file is no JSON: only a refusal is decoded, to say what Confluence said
+            if response.status >= 300:
+                self._raise_for_status(response, self._decode(response), "GET", path.split("?")[0])
+            raise UnavailableError(f"Confluence did not send {name_of(attachment)} (HTTP {response.status}).")
         return response.body
 
     # -- search -----------------------------------------------------------------------------
@@ -437,10 +568,10 @@ class RestConfluenceGateway(ConfluenceGateway):
         base = self._base(data)
         raw = mapper.results_of(data)
         hits = [mapper.search_hit_from(item, base) for item in raw]
-        total = data.get("totalSize", data.get("size", len(hits))) if isinstance(data, dict) else len(hits)
-        return SearchPage(hits, int(total), int(data.get("start", start)), int(data.get("limit", limit)), raw)
+        total = data.get("totalSize", data.get("size", len(hits)))
+        return SearchPage(hits, _whole(total, "a total"), _whole(data.get("start", start), "a start"), _whole(data.get("limit", limit), "a limit"), raw)
 
     # -- raw --------------------------------------------------------------------------------
 
     def request(self, method: str, path: str, body: Any = None) -> Any:
-        return self._call(method, _request_target(path), body)
+        return self._call(method, _request_target(path), body, expect="any")  # the raw API prints what the endpoint answers: any JSON

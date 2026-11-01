@@ -5,41 +5,76 @@ import argparse
 from typing import TYPE_CHECKING, Any
 
 from .....application.rendering import storage_from_input
+from .....domain.content import point_at
 from .....domain.drafts import PageDraft
 from .....domain.frontmatter import split_list
+from .....domain.privacy import redact_address, redact_text
 from ..runtime import Context
-from ..spec import Arg, Command, Example
+from ..spec import READS_FILE, READS_FOLDER, Arg, Command, Example
 from ._common import POWERSHELL_TEXT_NOTE, pretty, shortened, text_option
 from .changes import BODY, DRY_RUN, FILE, FORMAT, write_json, write_text
+from .structure import PARENT_NOT_A_PATH, ref_json
 
 if TYPE_CHECKING:
     from .....application.imports import BatchImport, ImportOutcome
+    from .....application.writing import PageWrite
+    from .....domain.model import PageRef
 
 GROUP = "Create and import"
 
 SPACE = Arg(("--space",), "Space key. Default: the current space.", metavar="KEY")
-PARENT = Arg(("--parent",), "The page to create it below (id or address). Default: below the home page of the space.", metavar="PAGE")
+PARENT = Arg(
+    ("--parent",),
+    "The page, folder, whiteboard, database or smart link to create it below (id or address). Default: below the home page of the space.",
+    metavar="ID",
+    not_a_path=PARENT_NOT_A_PATH,
+)
 FORCE_IMPORT = Arg(
     ("--force",),
     "Replace the body of an existing page even though what Markdown cannot say (macros, mentions, layouts ...) is lost.",
     kind="flag",
+    overwrites=True,
 )
+
+
+def below(where: PageRef | None) -> str:
+    """` below the folder 'Guides' [7001]` when a page goes below something that is no page; nothing for a page, or when no parent was named."""
+    if where is None or where.type == "page":
+        return ""
+    return f" below {point_at(where.type, where.id, where.title)}"
 
 
 # -- create --------------------------------------------------------------------------------------
 
 
+def created_json(result: PageWrite) -> dict[str, Any]:
+    where = result.where
+    return {**write_json(result), "parentId": where.id if where else None, "parentType": where.type if where else None, "parent": ref_json(where)}
+
+
+def created_text(result: PageWrite) -> str:
+    place = below(result.where)
+    if not place:
+        return write_text(result)  # below a page, or below the home page: the text that it always was
+    if result.dry_run:
+        return f"Dry run: a page would be created{place}; nothing was sent\n{pretty(shortened(result.payload))}"
+    page = result.page
+    labels = f" with the labels {', '.join(result.labels)}" if result.labels else ""
+    address = redact_address(page.url) if page else ""
+    return f"Created page {page.id if page else ''}: {redact_text(page.title) if page else ''}{place}{labels}" + (f"\n{address}" if address else "")
+
+
 def run_create(ctx: Context, args: argparse.Namespace) -> int:
     text = text_option(ctx, args.body, args.file, "body")
     draft = PageDraft(
-        space=args.space or "",
+        space=args.space,
         title=args.title,
         body=storage_from_input(text, args.format) if text is not None else "",
-        parent=args.parent or "",
+        parent=args.parent,
         labels=split_list(args.labels or ""),
     )
     result = ctx.app.create_page.execute(draft, dry_run=args.dry_run)
-    ctx.print_json(write_json(result)) if ctx.json_mode else ctx.print(write_text(result))
+    ctx.print_json(created_json(result)) if ctx.json_mode else ctx.print(created_text(result))
     return 0
 
 
@@ -51,12 +86,14 @@ def outcome_json(outcome: ImportOutcome) -> dict[str, Any]:
         "file": outcome.file,
         "action": outcome.action,
         "pageId": outcome.page_id or None,
-        "title": outcome.title,
-        "url": outcome.url or None,
+        "title": redact_text(outcome.title),
+        "url": redact_address(outcome.url) or None,
         "dryRun": outcome.dry_run,
         "message": outcome.message or None,
         "lost": list(outcome.lost),
         "labels": list(outcome.labels),
+        "parentType": outcome.parent.type if outcome.parent else None,
+        "parent": ref_json(outcome.parent),
         "payload": outcome.payload,
     }
 
@@ -68,7 +105,7 @@ def _outcome_line(outcome: ImportOutcome) -> str:
         return f"unchanged     {outcome.page_id} {outcome.file}"
     verb = {"created": "create", "updated": "update"}.get(outcome.action, outcome.action)
     label = f"would {verb}" if outcome.dry_run else outcome.action
-    return f"{label:<14}{outcome.page_id + ' ' if outcome.page_id else ''}{outcome.file}"
+    return f"{label:<14}{outcome.page_id + ' ' if outcome.page_id else ''}{outcome.file}{below(outcome.parent)}"
 
 
 def _batch_text(batch: BatchImport, dry_run: bool) -> str:
@@ -83,19 +120,20 @@ def _batch_text(batch: BatchImport, dry_run: bool) -> str:
 
 
 def run_import_md(ctx: Context, args: argparse.Namespace) -> int:
-    outcome = ctx.app.import_markdown.execute(args.file, space=args.space or "", parent=args.parent or "", dry_run=args.dry_run, force=args.force)
+    outcome = ctx.app.import_markdown.execute(args.file, space=args.space, parent=args.parent, dry_run=args.dry_run, force=args.force)
     if ctx.json_mode:
         ctx.print_json(outcome_json(outcome))
         return 0
     if args.dry_run:
-        verb = {"created": "create a page", "updated": f"update page {outcome.page_id}", "unchanged": f"leave page {outcome.page_id} as it is"}[outcome.action]
+        verb = {"created": "create a page" + below(outcome.parent), "updated": f"update page {outcome.page_id}", "unchanged": f"leave page {outcome.page_id} as it is"}[outcome.action]
         ctx.print(f"Dry run: would {verb}; nothing was sent" + (f"\n{pretty(shortened(outcome.payload))}" if outcome.payload else ""))
         if outcome.labels:
             ctx.print(f"Labels it would add: {', '.join(outcome.labels)}")
     elif outcome.action == "unchanged":
         ctx.print(f"Nothing to change: page {outcome.page_id} is already as the file says.")
     else:
-        ctx.print(f"{outcome.action.capitalize()} page {outcome.page_id}: {outcome.title}" + (f"\n{outcome.url}" if outcome.url else ""))
+        address = redact_address(outcome.url)
+        ctx.print(f"{outcome.action.capitalize()} page {outcome.page_id}: {redact_text(outcome.title)}{below(outcome.parent)}" + (f"\n{address}" if address else ""))
         if outcome.labels:
             ctx.print(f"Labels added: {', '.join(outcome.labels)}")
     if outcome.lost:
@@ -106,8 +144,8 @@ def run_import_md(ctx: Context, args: argparse.Namespace) -> int:
 def run_import_md_dir(ctx: Context, args: argparse.Namespace) -> int:
     batch = ctx.app.import_markdown_directory.execute(
         args.directory,
-        space=args.space or "",
-        parent=args.parent or "",
+        space=args.space,
+        parent=args.parent,
         dry_run=args.dry_run,
         force=args.force,
         continue_on_error=args.continue_on_error,
@@ -135,9 +173,11 @@ COMMANDS = (
         name="create",
         group=GROUP,
         summary="Create one page",
-        when="Use to create one new page below a parent. Preview with --dry-run; a title must be unique in its space.",
-        description="Creates a page in a space, below the home page or below --parent. The body is Markdown (converted to storage format) unless "
-        "--format says storage; a page without a body is fine. The dry run proves that the space and the parent exist and that the title is free. "
+        when="Use to create one new page below a parent: a page, or a folder to publish below. Preview with --dry-run; a title must be unique in its space.",
+        description="Creates a page in a space, below the home page or below --parent: a page, or a folder, a whiteboard, a database or a smart link of the "
+        "same space. The body is Markdown (converted to storage format) unless "
+        "--format says storage; a page without a body is fine. The dry run proves that the space and the parent exist and that the title is free, and "
+        "names what the parent is (`parentType`). "
         "A title is unique in a space: an existing one is refused (exit code 3).",
         args=(
             SPACE,
@@ -151,12 +191,14 @@ COMMANDS = (
         ),
         examples=(
             Example("conflu create --space ENG --title 'Release notes 2026.10' --file notes.md --dry-run"),
-            Example("conflu create --title 'Meeting 2026-10-15' --parent 123456 --body 'Agenda: ...' --labels meeting"),
+            Example("conflu create --space ENG --title 'Meeting 2026-10-15' --parent 123456 --body 'Agenda: ...' --labels meeting"),
+            Example("conflu create --space ENG --title 'Getting started' --parent 7001 --file start.md --dry-run", "below a folder"),
         ),
         notes=(POWERSHELL_TEXT_NOTE, "Read the id of the new page from `--json` (`pageId`); never guess it."),
         writes=True,
         json_output=True,
-        output="action (created), dryRun, pageId (null in a dry run), title, url, versionTo, labels[] and payload (exactly what is sent).",
+        output="action (created), dryRun, pageId (null in a dry run), title, url, versionTo, labels[], parentId, parentType (page, folder, whiteboard, database or "
+        "embed; null without --parent), parent{id,type,title} (null without --parent) and payload (exactly what is sent).",
         handler=run_create,
     ),
     Command(
@@ -167,10 +209,11 @@ COMMANDS = (
         description="Reads a Markdown file with an optional front matter (title, space, parent, page_id, labels, message) and publishes it. "
         "With `page_id` it updates that page; otherwise it looks for a page with the same title in the space and updates it, or creates the page. "
         "The title comes from the front matter, else from a first `# Heading`, which is then not repeated in the body. The space and parent of "
-        "the front matter win over --space and --parent, which win over the current space. Labels are added, never removed. "
+        "the front matter win over --space and --parent, which win over the current space. The parent is the id or address of a page, or of a "
+        "folder, whiteboard, database or smart link (`export` writes the id of whatever the parent is). Labels are added, never removed. "
         "`export` writes files that this command reads again.",
         args=(
-            Arg(("file",), "The Markdown file.", required=True, metavar="FILE.md"),
+            Arg(("file",), "The Markdown file.", required=True, metavar="FILE.md", path=READS_FILE),
             SPACE,
             PARENT,
             FORCE_IMPORT,
@@ -186,7 +229,10 @@ COMMANDS = (
         ),
         writes=True,
         json_output=True,
-        output="file, action (created, updated or unchanged; a label that is new makes it updated), pageId, title, url, dryRun, message, lost[], labels[] (added, or in a dry run to be added) and payload.",
+        output="file, action (created, updated or unchanged; a label that is new makes it updated), pageId, title, url, dryRun, message, lost[], labels[] (added, or in a dry run to be added), "
+        "parentType and parent{id,type,title} (of a page that is created below a parent; else null) and payload.",
+        destructive=True,
+        idempotent=True,
         handler=run_import_md,
     ),
     Command(
@@ -198,7 +244,7 @@ COMMANDS = (
         "failure unless --continue-on-error is given, and then exits with the code of the first failure. It is the way from a folder to "
         "Confluence; `export` is the way back. There is no `sync` command, and neither direction looks at what the other changed meanwhile.",
         args=(
-            Arg(("directory",), "The folder.", required=True, metavar="DIR"),
+            Arg(("directory",), "The folder.", required=True, metavar="DIR", path=READS_FOLDER),
             SPACE,
             PARENT,
             Arg(("--continue-on-error",), "Go on with the next file after a failure.", kind="flag"),
@@ -214,6 +260,8 @@ COMMANDS = (
         writes=True,
         json_output=True,
         output="dryRun, created, updated, unchanged, failed and outcomes[] (the output of import-md for each file).",
+        destructive=True,
+        idempotent=True,
         handler=run_import_md_dir,
     ),
 )

@@ -1,18 +1,18 @@
 """The list of commands. To add a command, write a module in `commands/` and list it in
-`commands/__init__.py`."""
+`commands/__init__.py`. The modules are imported when they are needed: `find_command` imports the one module of a command, `all_commands` all of them."""
 from __future__ import annotations
 
 from functools import lru_cache
 
-from .commands import MODULES
+from .commands import MODULE_NAMES, WHERE, load
 from .spec import GROUP_ORDER, Command
 
 
 @lru_cache(maxsize=1)
 def all_commands() -> tuple[Command, ...]:
     found: list[Command] = []
-    for module in MODULES:
-        found.extend(module.COMMANDS)
+    for name in MODULE_NAMES:
+        found.extend(load(name).COMMANDS)
     order = {group: index for index, group in enumerate(GROUP_ORDER)}
     # The sort is stable: inside a group the commands stay in the order of their module.
     return tuple(sorted(found, key=lambda command: order.get(command.group, len(order))))
@@ -20,7 +20,12 @@ def all_commands() -> tuple[Command, ...]:
 
 def find_command(name: str) -> Command | None:
     wanted = name.strip().lower()
-    for command in all_commands():
+    module = WHERE.get(wanted)
+    if module is not None:  # the common case: one module is imported, not twenty
+        for command in load(module).COMMANDS:
+            if wanted == command.name or wanted in command.aliases:
+                return command
+    for command in all_commands():  # a name that the table does not list: found if a command has it (a test fails for the entry that is missing), else None
         if wanted == command.name or wanted in command.aliases:
             return command
     return None

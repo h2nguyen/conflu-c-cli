@@ -9,14 +9,16 @@ never talks to Confluence (`help`, `version`, `how-to`) should not pay.
 from __future__ import annotations
 
 import base64
+import math
+import re
 import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Mapping
 
-from ...application.settings import Settings, is_local_host, wiki_root
+from ...application.settings import Settings, is_local_host, shown_address, wiki_root
 from ...domain.certificates import untrusted_chain_note
-from ...domain.errors import ConfigError, UnavailableError
+from ...domain.errors import ConfigError, UnavailableError, UsageError
 from ...version import __version__
 
 if TYPE_CHECKING:
@@ -31,16 +33,23 @@ _MAX_RETRY_WAIT = 30.0  # seconds; Confluence may ask for longer, but a command 
 _UNTRUSTED_ISSUER = (2, 18, 19, 20, 21)
 _REDIRECTS = (301, 302, 303, 307, 308)
 _MAX_REDIRECTS = 5
+_UNSENDABLE = re.compile(r"[\x00-\x20\x7f]")  # what http.client refuses in the address of a request: a space, a control character
 MAX_DOWNLOAD = 512 * 1024 * 1024  # bytes; a file is held in memory before it is written
 MAX_RESPONSE = 64 * 1024 * 1024  # bytes of an ordinary answer, once decoded; real answers are a few MiB at most
+MAX_GZIP_MEMBERS = 16  # a gzip body is a row of members, and what is left of the body is copied again for each one: 100 000 empty ones took minutes
 
 
 def _size_text(count: int) -> str:
     return f"{count // (1024 * 1024)} MiB" if count >= 1024 * 1024 else f"{count} bytes"
 
 
-def _too_big(limit: int) -> UnavailableError:
-    return UnavailableError(
+class AnswerTooBig(UnavailableError):
+    """The answer is larger than the limit of its request. It is an UnavailableError, with the same code and exit code; a request that
+    expects a small answer can tell this one apart."""
+
+
+def _too_big(limit: int) -> AnswerTooBig:
+    return AnswerTooBig(
         f"The answer is larger than {_size_text(limit)}; it was not read.",
         hint="Download a file in the browser. For a list, ask for less: a narrower search or a smaller --limit.",
     )
@@ -48,12 +57,17 @@ def _too_big(limit: int) -> UnavailableError:
 
 def _gunzip(data: bytes, limit: int) -> bytes:
     """What `gzip.decompress` gives, but never more than `limit` bytes: a few kilobytes on the wire must not be able to
-    grow into gigabytes in memory. The output is counted while it is produced."""
+    grow into gigabytes in memory. The output is counted while it is produced. More than MAX_GZIP_MEMBERS members is a `zlib.error`:
+    the loop copies the rest of the body once for every member, so a body of empty ones would take time that grows with its square."""
     import zlib
 
     pieces: list[bytes] = []
     total = 0
+    members = 0
     while data:  # a gzip file may hold several members one after the other; NUL padding between them is allowed
+        members += 1
+        if members > MAX_GZIP_MEMBERS:
+            raise zlib.error(f"the answer holds more than {MAX_GZIP_MEMBERS} gzip members")
         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
         pending = data
         while pending and not decoder.eof:
@@ -75,11 +89,15 @@ def _gunzip(data: bytes, limit: int) -> bytes:
 
 
 def _retry_delay(attempt: int, retry_after: str | None) -> float:
-    """The server's `Retry-After` (whole seconds), else one second more for every attempt."""
+    """The server's `Retry-After` (whole seconds), else one second more for every attempt. A value that is not a finite number (an HTTP
+    date, garbage, `nan`, `inf`) is ignored: `time.sleep(nan)` raises."""
     try:
-        return min(max(float(retry_after), 0.0), _MAX_RETRY_WAIT) if retry_after else float(attempt)
+        asked = float(retry_after) if retry_after else None
     except ValueError:
-        return float(attempt)  # an HTTP date or garbage: use the default
+        asked = None
+    if asked is None or not math.isfinite(asked):
+        return float(attempt)
+    return min(max(asked, 0.0), _MAX_RETRY_WAIT)
 
 
 def _origin(scheme: str, host: str, port: int | None) -> tuple[str, str, int]:
@@ -136,13 +154,15 @@ class HttpTransport:
         attempts = 1 + max(self._settings.retry if retries is None else retries, 0) if method == "GET" else 1
         return self._send(scheme, host, port, method, prefix + path, sent, body, attempts, timeout, limit, shared=True)
 
-    def download(self, path: str, *, timeout: float | None = None) -> HttpResponse:
+    def download(self, path: str, *, timeout: float | None = None, limit: int | None = None) -> HttpResponse:
         """A file below the wiki address. Attachments are served by a media service on another host after a redirect:
-        the redirect is followed, and the credentials go only to the host they were meant for."""
+        the redirect is followed, and the credentials go only to the host they were meant for. `limit` is the most that the caller takes (never
+        more than MAX_DOWNLOAD): a longer file raises AnswerTooBig as soon as that is seen, and the rest of it is not read."""
         scheme, host, port, prefix = self._target()
         home = _origin(scheme, host, port)
+        cap = min(limit, MAX_DOWNLOAD) if limit else MAX_DOWNLOAD
         response = self.request(
-            "GET", path, accept="*/*", headers={"Accept-Encoding": "identity"}, timeout=timeout, limit=MAX_DOWNLOAD
+            "GET", path, accept="*/*", headers={"Accept-Encoding": "identity"}, timeout=timeout, limit=cap
         )
         here = f"{scheme}://{host}{f':{port}' if port else ''}{prefix}{path}"
         hops = 0
@@ -150,8 +170,15 @@ class HttpTransport:
             hops += 1
             if hops > _MAX_REDIRECTS:
                 raise UnavailableError("Confluence redirected the download too many times.", hint="Try again later.")
-            here = urllib.parse.urljoin(here, response.headers["location"])
-            parts = urllib.parse.urlsplit(here)
+            try:
+                here = urllib.parse.urljoin(here, response.headers["location"])
+                parts = urllib.parse.urlsplit(here)
+                target_port = parts.port  # a port that is no number raises here
+            except ValueError:  # `Location: http://[`: what the answer says is the problem, not the address that was asked for
+                raise UnavailableError(
+                    "Confluence redirected the download to an address that cannot be read.",
+                    hint="Try again. If it stays, something between you and Confluence is changing its answers.",
+                ) from None
             if not parts.hostname or parts.username or parts.password:
                 raise UnavailableError("Confluence redirected the download to an address that cannot be used.")
             if parts.scheme != "https" and not (parts.scheme == "http" and is_local_host(parts.hostname)):
@@ -160,19 +187,34 @@ class HttpTransport:
                     hint="The credentials and the file must not travel unencrypted.",
                 )
             target = parts.path + (f"?{parts.query}" if parts.query else "")
-            if _origin(parts.scheme, parts.hostname, parts.port) == home:
+            if not target.isascii() or _UNSENDABLE.search(target):  # no request can be made for it, and the answer made it: nothing was sent
+                raise UnavailableError(
+                    "Confluence redirected the download to an address that cannot be used: it holds a space, a control character or a letter that no address can hold.",
+                    hint="Nothing was sent to it. Try again. If it stays, something between you and Confluence is changing its answers.",
+                )
+            if _origin(parts.scheme, parts.hostname, target_port) == home:
                 sent = {
                     "Authorization": self._authorization(),
                     "Accept": "*/*",
                     "Accept-Encoding": "identity",
                     "User-Agent": f"conflu-c-cli/{__version__}",
                 }
-                response = self._send(scheme, host, port, "GET", target, sent, None, 1, timeout, MAX_DOWNLOAD, shared=True)
+                response = self._send(scheme, host, port, "GET", target, sent, None, 1, timeout, cap, shared=True)
             else:
                 sent = {"Accept": "*/*", "Accept-Encoding": "identity", "User-Agent": f"conflu-c-cli/{__version__}"}
                 attempts = 1 + max(self._settings.retry, 0)
-                response = self._send(parts.scheme, parts.hostname, parts.port, "GET", target, sent, None, attempts, timeout, MAX_DOWNLOAD, shared=False)
+                response = self._send(parts.scheme, parts.hostname, target_port, "GET", target, sent, None, attempts, timeout, cap, shared=False)
         return response
+
+    def get_public(self, base_url: str, path: str, *, limit: int, timeout: float | None = None) -> HttpResponse:
+        """`path` at the root of the host that `base_url` names (not below `/wiki`), asked for without any credential, and the answer is
+        taken as it comes: a redirect is not followed, so nothing is ever sent to another host. For public information that is read before
+        the credentials work (`conflu setup --discover`). The TLS settings, the timeouts, the retries of a read and the explanation of a
+        refused certificate are those of every other request, and so are the rules for the address of the site."""
+        scheme, host, port, _ = self._address(base_url)
+        sent = {"Accept": "application/json", "Accept-Encoding": "gzip", "User-Agent": f"conflu-c-cli/{__version__}"}
+        attempts = 1 + max(self._settings.retry, 0)
+        return self._send(scheme, host, port, "GET", path, sent, None, attempts, timeout, limit, shared=False)
 
     def close(self) -> None:
         self._close()
@@ -199,6 +241,7 @@ class HttpTransport:
         import zlib
 
         shown = target.split("?")[0] if shared else f"{host}{target.split('?')[0]}"  # a media address carries a token in its query
+        budget = timeout if timeout is not None else self._settings.max_time
         last_problem = ""
         for attempt in range(1, attempts + 1):
             started = time.perf_counter()
@@ -206,15 +249,24 @@ class HttpTransport:
             try:
                 connection = self._connect(scheme, host, port) if shared else self._open(scheme, host, port)
                 if connection.sock is not None:
-                    connection.sock.settimeout(timeout if timeout is not None else self._settings.max_time)
+                    connection.sock.settimeout(budget)  # the time to wait for the next bytes; the deadline below is the time for the whole answer
                 connection.request(method, target, body=body, headers=dict(headers))
+                deadline = time.monotonic() + budget  # counted from the end of the request: a slow upload has not used up the time of the answer
                 response = connection.getresponse()
-                data = self._read(response, limit)
+                data = self._read(response, limit, deadline)
                 if shared and response.will_close:
                     self._close()  # the next request opens a new connection with the right timeouts
                 if data and response.getheader("Content-Encoding", "").lower() == "gzip":
                     data = _gunzip(data, limit)
-            except (OSError, EOFError, zlib.error, http.client.HTTPException) as error:
+            except http.client.InvalidURL:  # before HTTPException, which it is one of. Its text repeats the address, which may hold a token: not shown
+                if shared:
+                    self._close()  # the library stops half-way into the request
+                self._debug(f"{method} {shown} was not sent: no address can hold a space or a control character")
+                raise UsageError(
+                    "The address of the request holds a space or a control character, which no address can hold: nothing was sent.",
+                    hint="Write a space as %20 and leave line breaks and other control characters out.",
+                ) from None
+            except (OSError, EOFError, zlib.error, ValueError, http.client.HTTPException) as error:  # a ValueError: what came in or an address in it, which no parser or socket takes
                 if shared:
                     self._close()
                 last_problem = f"{type(error).__name__}: {error}"
@@ -223,7 +275,7 @@ class HttpTransport:
                 if attempt < attempts and not refused_certificate:
                     self._sleep(float(attempt))
                     continue
-                if isinstance(error, (EOFError, zlib.error)):
+                if isinstance(error, (EOFError, zlib.error)) or (isinstance(error, ValueError) and not isinstance(error, OSError)):  # a refused certificate is both a ValueError and an OSError: it is the network's
                     raise UnavailableError(
                         f"Confluence sent an answer that could not be read ({last_problem}).",
                         hint="Try again; if it stays, a proxy between you and Confluence may be damaging the response.",
@@ -249,14 +301,21 @@ class HttpTransport:
         raise UnavailableError(f"Cannot reach Confluence ({last_problem}).")  # pragma: no cover
 
     @staticmethod
-    def _read(response: http.client.HTTPResponse, limit: int) -> bytes:
+    def _read(response: http.client.HTTPResponse, limit: int, deadline: float | None = None) -> bytes:
+        """The body of an answer, never more than `limit` bytes and, with a `deadline` (a `time.monotonic()` reading), not for longer than that.
+        The socket times out when no byte comes for CONFLUENCE_MAX_TIME seconds, which a server that sends one byte in each of them never
+        causes: a body is read piece by piece (`read1` is one system call, where `read(65536)` waits for 64 KiB), and the clock is looked at
+        between the pieces. A deadline that passed is a `TimeoutError`, which is what a socket that timed out raises."""
         declared = response.getheader("Content-Length", "")
-        if declared.isascii() and declared.isdigit() and int(declared) > limit:  # `²`.isdigit() is True and int() refuses it
+        if declared.isascii() and declared.isdigit() and (len(declared) > 18 or int(declared) > limit):  # `²`.isdigit() is True and int() refuses it, and so does a number of 5000 digits
             raise _too_big(limit)  # no need to read what is refused anyway
+        read = getattr(response, "read1", None) or response.read
         chunks: list[bytes] = []
         total = 0
         while True:
-            chunk = response.read(65536)
+            if deadline is not None and time.monotonic() > deadline:
+                raise TimeoutError("the answer was still coming in when the time allowed for it (CONFLUENCE_MAX_TIME) was up")
+            chunk = read(65536)
             if not chunk:
                 return b"".join(chunks)
             total += len(chunk)
@@ -297,11 +356,42 @@ class HttpTransport:
             if self._settings.tls_strict:
                 text += " CONFLUENCE_TLS_STRICT is on: unsetting it accepts certificates that lack the extensions Python 3.13 insists on."
             return text + " `conflu doctor` checks all of it."
+        if "timed out" in problem or "CONFLUENCE_MAX_TIME" in problem:
+            return (
+                f"Nothing came in time: the connection may take {self._settings.connect_timeout:g} seconds (CONFLUENCE_CONNECT_TIMEOUT) and the whole answer "
+                f"{self._settings.max_time:g} (CONFLUENCE_MAX_TIME). Check the network or VPN; for a slow link or a big file allow more, for example "
+                "`conflu config set CONFLUENCE_MAX_TIME 600`. `conflu doctor` checks all of it."
+            )
         return "Check CONFLUENCE_BASE_URL and the network or VPN. `conflu doctor` checks all of it."
 
     def _authorization(self) -> str:
         credentials = f"{self._settings.email}:{self._settings.api_token}".encode("utf-8")
         return "Basic " + base64.b64encode(credentials).decode("ascii")
+
+    def _address(self, base_url: str) -> tuple[str, str, int | None, str]:
+        """The address of the site as (scheme, host, port, path), checked: a web address with a host and no user name, password, query or
+        fragment, and not plain http unless it is on this computer or CONFLUENCE_ALLOW_HTTP says so. What a refusal says never repeats an
+        address that holds credentials, and an `@` anywhere in the address is taken for the start of them."""
+        example = "https://example.atlassian.net/wiki"
+        invalid = ConfigError(f"CONFLUENCE_BASE_URL is not a valid web address: {shown_address(base_url)}", hint=f"It must look like {example}")
+        try:
+            parts = urllib.parse.urlsplit(wiki_root(base_url))
+            host, port = parts.hostname, parts.port  # a port that is no number raises here, and its text would repeat part of the address
+        except ValueError:
+            raise invalid from None
+        if parts.scheme not in ("http", "https") or not host:
+            raise invalid
+        if parts.username is not None or parts.password is not None or "@" in base_url or parts.query or parts.fragment:
+            raise ConfigError(
+                "CONFLUENCE_BASE_URL must not contain a user name, a password, a query or a fragment.",
+                hint=f"It must look like {example}; the e-mail address and the token are set apart.",
+            )
+        if parts.scheme == "http" and not self._settings.allow_http and not is_local_host(host):
+            raise ConfigError(
+                "CONFLUENCE_BASE_URL uses plain http: the credentials would travel unencrypted with every request.",
+                hint="Use the https address of the site. On an isolated network you can accept the risk with `conflu config set CONFLUENCE_ALLOW_HTTP true`.",
+            )
+        return parts.scheme, host, port, parts.path.rstrip("/")
 
     def _target(self) -> tuple[str, str, int | None, str]:
         if self._site is None:
@@ -312,23 +402,7 @@ class HttpTransport:
                 raise ConfigError("CONFLUENCE_EMAIL is not set.", hint="Run `conflu config set CONFLUENCE_EMAIL user@example.com`.")
             if not self._settings.api_token:
                 raise ConfigError("CONFLUENCE_API_TOKEN is not set.", hint="Run `conflu setup-token`.")
-            parts = urllib.parse.urlsplit(wiki_root(self._settings.base_url))
-            if parts.scheme not in ("http", "https") or not parts.hostname:
-                raise ConfigError(
-                    f"CONFLUENCE_BASE_URL is not a valid web address: {self._settings.base_url}",
-                    hint=f"It must look like {example}",
-                )
-            if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
-                raise ConfigError(
-                    "CONFLUENCE_BASE_URL must not contain a user name, a password, a query or a fragment.",
-                    hint=f"It must look like {example}; the e-mail address and the token are set apart.",
-                )
-            if parts.scheme == "http" and not self._settings.allow_http and not is_local_host(parts.hostname):
-                raise ConfigError(
-                    "CONFLUENCE_BASE_URL uses plain http: the credentials would travel unencrypted with every request.",
-                    hint="Use the https address of the site. On an isolated network you can accept the risk with `conflu config set CONFLUENCE_ALLOW_HTTP true`.",
-                )
-            self._site = (parts.scheme, parts.hostname, parts.port, parts.path.rstrip("/"))
+            self._site = self._address(self._settings.base_url)
         return self._site
 
     def _connect(self, scheme: str, host: str, port: int | None) -> http.client.HTTPConnection:
@@ -339,12 +413,13 @@ class HttpTransport:
     def _open(self, scheme: str, host: str, port: int | None) -> http.client.HTTPConnection:
         import http.client
 
+        name = f"[{host}]" if ":" in host else host  # http.client wants an IPv6 address in brackets: else it reads the last group as a port
         if scheme == "https":
             connection: http.client.HTTPConnection = http.client.HTTPSConnection(
-                host, port, context=self._context(), timeout=self._settings.connect_timeout
+                name, port, context=self._context(), timeout=self._settings.connect_timeout
             )
         else:
-            connection = http.client.HTTPConnection(host, port, timeout=self._settings.connect_timeout)
+            connection = http.client.HTTPConnection(name, port, timeout=self._settings.connect_timeout)
         connection.connect()
         return connection
 

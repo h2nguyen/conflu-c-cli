@@ -1,0 +1,262 @@
+# The query parameters, the headers and the request body that the Confluence Cloud REST API v2 document gives each of its operations, one operation per line.
+# Derived from https://dac-static.atlassian.com/cloud/confluence/openapi-v2.v3.json (info.version 2.0.0, read on 2026-10-30): 252 operations, those of confluence_cloud_v2_endpoints.txt.
+# The document's server URL is https://{your-domain}/wiki/api/v2, so every path here starts with /api/v2. Guide: https://developer.atlassian.com/cloud/confluence/rest/v2/intro/
+# A line is `METHOD path | QUERY | BODY`, or `METHOD path | QUERY | header: HEADERS | BODY` when the document names a header parameter. The method and the path template are
+# those of the endpoint list of this API, in the same order. Only top-level names are listed, each part sorted by name.
+# QUERY is `no query`, or `query: ` and the parameters: `*` after a name marks a required one, `<=N` the documented maximum of `limit`, `(deprecated)` one that the document marks as deprecated.
+# BODY is `no body`; `body: ` and what a JSON body may be; or `not JSON (media type: form fields)` for a request that is not JSON, such as a multipart upload. `optional ` in front says that a request may have none.
+# A JSON body is `{properties}` for an object (`*` marks a required property, `...` that other properties are accepted as well), `[]` for an array or `any` for anything; the alternatives of a oneOf are joined by ` or `.
+# tests/support/conformance.py reads this file. When `strict_parameters` is on (the sweep of the commands turns it on) the mock Confluence answers HTTP 400 to a request that does not fit its line and
+# records it, so that the CLI cannot come to send a parameter or a body that the document does not know. Keep the file as the document has it: it is the reference, not what the CLI uses.
+DELETE /api/v2/admin-key | no query | no body
+GET /api/v2/admin-key | no query | no body
+POST /api/v2/admin-key | no query | optional body: {durationInMinutes}
+GET /api/v2/app/properties | query: cursor, limit<=250 | no body
+DELETE /api/v2/app/properties/{propertyKey} | no query | no body
+GET /api/v2/app/properties/{propertyKey} | no query | no body
+PUT /api/v2/app/properties/{propertyKey} | no query | body: {...}
+GET /api/v2/attachments | query: cursor, filename, limit<=250, mediaType, sort, status | no body
+GET /api/v2/attachments/{attachment-id}/properties | query: cursor, key, limit<=250, sort | no body
+POST /api/v2/attachments/{attachment-id}/properties | no query | body: {key, value}
+DELETE /api/v2/attachments/{attachment-id}/properties/{property-id} | no query | no body
+GET /api/v2/attachments/{attachment-id}/properties/{property-id} | no query | no body
+PUT /api/v2/attachments/{attachment-id}/properties/{property-id} | no query | body: {key, value, version}
+GET /api/v2/attachments/{attachment-id}/versions/{version-number} | no query | no body
+DELETE /api/v2/attachments/{id} | query: purge | no body
+GET /api/v2/attachments/{id} | query: include-collaborators, include-labels, include-operations, include-properties, include-version, include-versions, version | no body
+GET /api/v2/attachments/{id}/footer-comments | query: body-format, cursor, limit<=250, sort, version | no body
+GET /api/v2/attachments/{id}/labels | query: cursor, limit<=250, prefix, sort | no body
+GET /api/v2/attachments/{id}/operations | no query | no body
+GET /api/v2/attachments/{id}/thumbnail/download | query: height, version, width | no body
+GET /api/v2/attachments/{id}/versions | query: cursor, limit<=250, sort | no body
+GET /api/v2/blogposts | query: body-format, cursor, id, limit<=250, sort, space-id, status, title | no body
+POST /api/v2/blogposts | query: private | body: {body, createdAt, spaceId*, status, title}
+GET /api/v2/blogposts/{blogpost-id}/properties | query: cursor, key, limit<=250, sort | no body
+POST /api/v2/blogposts/{blogpost-id}/properties | no query | body: {key, value}
+DELETE /api/v2/blogposts/{blogpost-id}/properties/{property-id} | no query | no body
+GET /api/v2/blogposts/{blogpost-id}/properties/{property-id} | no query | no body
+PUT /api/v2/blogposts/{blogpost-id}/properties/{property-id} | no query | body: {key, value, version}
+GET /api/v2/blogposts/{blogpost-id}/versions/{version-number} | no query | no body
+DELETE /api/v2/blogposts/{id} | query: draft, purge | no body
+GET /api/v2/blogposts/{id} | query: body-format, get-draft, include-collaborators, include-favorited-by-current-user-status, include-labels, include-likes, include-operations, include-properties, include-version, include-versions, include-webresources, status, version | no body
+PUT /api/v2/blogposts/{id} | no query | body: {body*, createdAt, id*, spaceId, status*, title*, version*}
+GET /api/v2/blogposts/{id}/attachments | query: cursor, filename, limit<=250, mediaType, sort, status | no body
+GET /api/v2/blogposts/{id}/classification-level | query: status | no body
+PUT /api/v2/blogposts/{id}/classification-level | no query | body: {id*, status*}
+POST /api/v2/blogposts/{id}/classification-level/reset | no query | body: {status*}
+GET /api/v2/blogposts/{id}/custom-content | query: body-format, cursor, limit<=250, sort, type* | no body
+GET /api/v2/blogposts/{id}/footer-comments | query: body-format, cursor, limit<=250, sort, status | no body
+GET /api/v2/blogposts/{id}/inline-comments | query: body-format, cursor, limit<=250, resolution-status, sort, status | no body
+GET /api/v2/blogposts/{id}/labels | query: cursor, limit<=250, prefix, sort | no body
+GET /api/v2/blogposts/{id}/likes/count | no query | no body
+GET /api/v2/blogposts/{id}/likes/users | query: cursor, limit<=250 | no body
+GET /api/v2/blogposts/{id}/operations | no query | no body
+DELETE /api/v2/blogposts/{id}/permissions | query: allow-self-lockout, operation, principal-id, principal-type | no body
+GET /api/v2/blogposts/{id}/permissions | query: cursor, limit<=250, operation, principal-id, principal-type | no body
+POST /api/v2/blogposts/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+PUT /api/v2/blogposts/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+POST /api/v2/blogposts/{id}/redact | no query | optional body: {body, cleanHistory, createdAt*, title, versionNumber}
+GET /api/v2/blogposts/{id}/restriction-state | no query | no body
+PUT /api/v2/blogposts/{id}/restriction-state | query: allow-self-lockout | body: {state*}
+GET /api/v2/blogposts/{id}/versions | query: body-format, cursor, limit<=250, sort | no body
+GET /api/v2/classification-levels | no query | no body
+GET /api/v2/comments/{comment-id}/properties | query: cursor, key, limit<=250, sort | no body
+POST /api/v2/comments/{comment-id}/properties | no query | body: {key, value}
+DELETE /api/v2/comments/{comment-id}/properties/{property-id} | no query | no body
+GET /api/v2/comments/{comment-id}/properties/{property-id} | no query | no body
+PUT /api/v2/comments/{comment-id}/properties/{property-id} | no query | body: {key, value, version}
+POST /api/v2/content/convert-ids-to-types | no query | body: {contentIds*}
+GET /api/v2/custom-content | query: body-format, cursor, id, limit<=250, sort, space-id, type* | no body
+POST /api/v2/custom-content | no query | body: {blogPostId, body*, customContentId, pageId, spaceId, status, title*, type*}
+GET /api/v2/custom-content/{custom-content-id}/properties | query: cursor, key, limit<=250, sort | no body
+POST /api/v2/custom-content/{custom-content-id}/properties | no query | body: {key, value}
+DELETE /api/v2/custom-content/{custom-content-id}/properties/{property-id} | no query | no body
+GET /api/v2/custom-content/{custom-content-id}/properties/{property-id} | no query | no body
+PUT /api/v2/custom-content/{custom-content-id}/properties/{property-id} | no query | body: {key, value, version}
+GET /api/v2/custom-content/{custom-content-id}/versions | query: body-format, cursor, limit<=250, sort | no body
+GET /api/v2/custom-content/{custom-content-id}/versions/{version-number} | no query | no body
+DELETE /api/v2/custom-content/{id} | query: purge | no body
+GET /api/v2/custom-content/{id} | query: body-format, include-collaborators, include-labels, include-operations, include-properties, include-version, include-versions, version | no body
+PUT /api/v2/custom-content/{id} | no query | body: {blogPostId, body*, customContentId, id*, pageId, spaceId, status*, title*, type*, version*}
+GET /api/v2/custom-content/{id}/attachments | query: cursor, filename, limit<=250, mediaType, sort, status | no body
+GET /api/v2/custom-content/{id}/children | query: cursor, limit<=250, sort | no body
+GET /api/v2/custom-content/{id}/footer-comments | query: body-format, cursor, limit<=250, sort | no body
+GET /api/v2/custom-content/{id}/labels | query: cursor, limit<=250, prefix, sort | no body
+GET /api/v2/custom-content/{id}/operations | no query | no body
+GET /api/v2/data-policies/metadata | no query | no body
+GET /api/v2/data-policies/spaces | query: cursor, ids, keys, limit<=250, sort | no body
+POST /api/v2/databases | query: private | body: {parentId, spaceId*, title}
+DELETE /api/v2/databases/{database-id}/properties/{property-id} | no query | no body
+GET /api/v2/databases/{database-id}/properties/{property-id} | no query | no body
+PUT /api/v2/databases/{database-id}/properties/{property-id} | no query | body: {key, value, version}
+DELETE /api/v2/databases/{id} | no query | no body
+GET /api/v2/databases/{id} | query: include-collaborators, include-direct-children, include-operations, include-properties | no body
+GET /api/v2/databases/{id}/ancestors | query: limit<=250 | no body
+GET /api/v2/databases/{id}/classification-level | no query | no body
+PUT /api/v2/databases/{id}/classification-level | no query | body: {id*, status*}
+POST /api/v2/databases/{id}/classification-level/reset | no query | body: {status*}
+GET /api/v2/databases/{id}/descendants | query: cursor, depth, limit<=250 | no body
+GET /api/v2/databases/{id}/direct-children | query: cursor, limit<=250, sort | no body
+GET /api/v2/databases/{id}/entries | query: cursor, filter, limit<=250, sort | header: If-None-Match | no body
+GET /api/v2/databases/{id}/entries/{entryId} | no query | header: If-None-Match | no body
+GET /api/v2/databases/{id}/fields | query: cursor, limit<=250 | header: If-None-Match | no body
+GET /api/v2/databases/{id}/operations | no query | no body
+DELETE /api/v2/databases/{id}/permissions | query: allow-self-lockout, operation, principal-id, principal-type | no body
+GET /api/v2/databases/{id}/permissions | query: cursor, limit<=250, operation, principal-id, principal-type | no body
+POST /api/v2/databases/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+PUT /api/v2/databases/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+GET /api/v2/databases/{id}/properties | query: cursor, key, limit<=250, sort | no body
+POST /api/v2/databases/{id}/properties | no query | body: {key, value}
+GET /api/v2/databases/{id}/restriction-state | no query | no body
+PUT /api/v2/databases/{id}/restriction-state | query: allow-self-lockout | body: {state*}
+GET /api/v2/databases/{id}/views | query: cursor, limit<=250 | header: If-None-Match | no body
+POST /api/v2/embeds | no query | body: {embedUrl, parentId, spaceId*, title}
+DELETE /api/v2/embeds/{embed-id}/properties/{property-id} | no query | no body
+GET /api/v2/embeds/{embed-id}/properties/{property-id} | no query | no body
+PUT /api/v2/embeds/{embed-id}/properties/{property-id} | no query | body: {key, value, version}
+DELETE /api/v2/embeds/{id} | no query | no body
+GET /api/v2/embeds/{id} | query: include-collaborators, include-direct-children, include-operations, include-properties | no body
+GET /api/v2/embeds/{id}/ancestors | query: limit<=250 | no body
+GET /api/v2/embeds/{id}/descendants | query: cursor, depth, limit<=250 | no body
+GET /api/v2/embeds/{id}/direct-children | query: cursor, limit<=250, sort | no body
+GET /api/v2/embeds/{id}/operations | no query | no body
+GET /api/v2/embeds/{id}/properties | query: cursor, key, limit<=250, sort | no body
+POST /api/v2/embeds/{id}/properties | no query | body: {key, value}
+POST /api/v2/folders | no query | body: {parentId, spaceId*, title}
+DELETE /api/v2/folders/{folder-id}/properties/{property-id} | no query | no body
+GET /api/v2/folders/{folder-id}/properties/{property-id} | no query | no body
+PUT /api/v2/folders/{folder-id}/properties/{property-id} | no query | body: {key, value, version}
+DELETE /api/v2/folders/{id} | no query | no body
+GET /api/v2/folders/{id} | query: include-collaborators, include-direct-children, include-operations, include-properties | no body
+GET /api/v2/folders/{id}/ancestors | query: limit<=250 | no body
+GET /api/v2/folders/{id}/descendants | query: cursor, depth, limit<=250 | no body
+GET /api/v2/folders/{id}/direct-children | query: cursor, limit<=250, sort | no body
+GET /api/v2/folders/{id}/operations | no query | no body
+DELETE /api/v2/folders/{id}/permissions | query: allow-self-lockout, operation, principal-id, principal-type | no body
+GET /api/v2/folders/{id}/permissions | query: cursor, limit<=250, operation, principal-id, principal-type | no body
+POST /api/v2/folders/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+PUT /api/v2/folders/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+GET /api/v2/folders/{id}/properties | query: cursor, key, limit<=250, sort | no body
+POST /api/v2/folders/{id}/properties | no query | body: {key, value}
+GET /api/v2/folders/{id}/restriction-state | no query | no body
+PUT /api/v2/folders/{id}/restriction-state | query: allow-self-lockout | body: {state*}
+GET /api/v2/footer-comments | query: body-format, cursor, limit<=250, sort | no body
+POST /api/v2/footer-comments | no query | body: {attachmentId, blogPostId, body, customContentId, pageId, parentCommentId}
+DELETE /api/v2/footer-comments/{comment-id} | no query | no body
+GET /api/v2/footer-comments/{comment-id} | query: body-format, include-likes, include-operations, include-properties, include-version, include-versions, version | no body
+PUT /api/v2/footer-comments/{comment-id} | no query | body: {_links, body, version}
+GET /api/v2/footer-comments/{id}/children | query: body-format, cursor, limit<=250, sort | no body
+GET /api/v2/footer-comments/{id}/likes/count | no query | no body
+GET /api/v2/footer-comments/{id}/likes/users | query: cursor, limit<=250 | no body
+GET /api/v2/footer-comments/{id}/operations | no query | no body
+GET /api/v2/footer-comments/{id}/versions | query: body-format, cursor, limit<=250, sort | no body
+GET /api/v2/footer-comments/{id}/versions/{version-number} | no query | no body
+GET /api/v2/inline-comments | query: body-format, cursor, limit<=250, sort | no body
+POST /api/v2/inline-comments | no query | body: {blogPostId, body, inlineCommentProperties, pageId, parentCommentId}
+DELETE /api/v2/inline-comments/{comment-id} | no query | no body
+GET /api/v2/inline-comments/{comment-id} | query: body-format, include-likes, include-operations, include-properties, include-version, include-versions, version | no body
+PUT /api/v2/inline-comments/{comment-id} | no query | body: {body, resolved, version}
+GET /api/v2/inline-comments/{id}/children | query: body-format, cursor, limit<=250, sort | no body
+GET /api/v2/inline-comments/{id}/likes/count | no query | no body
+GET /api/v2/inline-comments/{id}/likes/users | query: cursor, limit<=250 | no body
+GET /api/v2/inline-comments/{id}/operations | no query | no body
+GET /api/v2/inline-comments/{id}/versions | query: body-format, cursor, limit<=250, sort | no body
+GET /api/v2/inline-comments/{id}/versions/{version-number} | no query | no body
+GET /api/v2/labels | query: cursor, label-id, limit<=250, prefix, sort | no body
+GET /api/v2/labels/{id}/attachments | query: cursor, limit<=250, sort | no body
+GET /api/v2/labels/{id}/blogposts | query: body-format, cursor, limit<=250, sort, space-id | no body
+GET /api/v2/labels/{id}/pages | query: body-format, cursor, limit<=250, sort, space-id | no body
+GET /api/v2/pages | query: body-format, cursor, id, limit<=250, sort, space-id, status, subtype, title | no body
+POST /api/v2/pages | query: embedded, private, root-level | body: {body, parentId, spaceId*, status, subtype, title}
+DELETE /api/v2/pages/{id} | query: draft, purge | no body
+GET /api/v2/pages/{id} | query: body-format, get-draft, include-collaborators, include-direct-children, include-favorited-by-current-user-status, include-labels, include-likes, include-operations, include-properties, include-version, include-versions, include-webresources, status, version | no body
+PUT /api/v2/pages/{id} | no query | body: {body*, id*, ownerId, parentId, spaceId, status*, title*, version*}
+GET /api/v2/pages/{id}/ancestors | query: limit<=250 | no body
+GET /api/v2/pages/{id}/attachments | query: cursor, filename, limit<=250, mediaType, sort, status | no body
+GET /api/v2/pages/{id}/children | query: cursor, limit<=250, sort | no body
+GET /api/v2/pages/{id}/classification-level | query: status | no body
+PUT /api/v2/pages/{id}/classification-level | no query | body: {id*, status*}
+POST /api/v2/pages/{id}/classification-level/reset | no query | body: {status*}
+GET /api/v2/pages/{id}/custom-content | query: body-format, cursor, limit<=250, sort, type* | no body
+GET /api/v2/pages/{id}/descendants | query: cursor, depth, limit<=250 | no body
+GET /api/v2/pages/{id}/direct-children | query: cursor, limit<=250, sort | no body
+GET /api/v2/pages/{id}/footer-comments | query: body-format, cursor, limit<=250, sort, status | no body
+GET /api/v2/pages/{id}/inline-comments | query: body-format, cursor, limit<=250, resolution-status, sort, status | no body
+GET /api/v2/pages/{id}/labels | query: cursor, limit<=250, prefix, sort | no body
+GET /api/v2/pages/{id}/likes/count | no query | no body
+GET /api/v2/pages/{id}/likes/users | query: cursor, limit<=250 | no body
+GET /api/v2/pages/{id}/operations | no query | no body
+DELETE /api/v2/pages/{id}/permissions | query: allow-self-lockout, operation, principal-id, principal-type | no body
+GET /api/v2/pages/{id}/permissions | query: cursor, limit<=250, operation, principal-id, principal-type | no body
+POST /api/v2/pages/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+PUT /api/v2/pages/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+POST /api/v2/pages/{id}/redact | no query | optional body: {body, cleanHistory, createdAt*, title, versionNumber}
+GET /api/v2/pages/{id}/restriction-state | no query | no body
+PUT /api/v2/pages/{id}/restriction-state | query: allow-self-lockout | body: {state*}
+PUT /api/v2/pages/{id}/title | no query | body: {status*, title*}
+GET /api/v2/pages/{id}/versions | query: body-format, cursor, limit<=250, sort | no body
+GET /api/v2/pages/{page-id}/properties | query: cursor, key, limit<=250, sort | no body
+POST /api/v2/pages/{page-id}/properties | no query | body: {key, value}
+DELETE /api/v2/pages/{page-id}/properties/{property-id} | no query | no body
+GET /api/v2/pages/{page-id}/properties/{property-id} | no query | no body
+PUT /api/v2/pages/{page-id}/properties/{property-id} | no query | body: {key, value, version}
+GET /api/v2/pages/{page-id}/versions/{version-number} | no query | no body
+GET /api/v2/space-permissions | query: cursor, limit<=250 | no body
+POST /api/v2/space-permissions/transition/access-removals | no query | body: {permissionCombinationIds*, spaceSelection*}
+GET /api/v2/space-permissions/transition/combinations | query: cursor, limit<=250 | no body
+POST /api/v2/space-permissions/transition/combinations | no query | no body
+POST /api/v2/space-permissions/transition/role-assignments | no query | body: {assignments*, spaceSelection*}
+GET /api/v2/space-permissions/transition/tasks/{taskId} | no query | no body
+GET /api/v2/space-role-mode | no query | no body
+GET /api/v2/space-roles | query: cursor, limit<=250, principal-id, principal-type, role-type, space-id | no body
+POST /api/v2/space-roles | no query | body: {description*, name*, spacePermissions*}
+DELETE /api/v2/space-roles/{id} | no query | no body
+GET /api/v2/space-roles/{id} | no query | no body
+PUT /api/v2/space-roles/{id} | no query | body: {anonymousReassignmentRoleId, description*, guestReassignmentRoleId, name*, spacePermissions*}
+GET /api/v2/spaces | query: cursor, description-format, favorited-by, ids, include-icon, keys, labels, limit<=250, not-favorited-by, sort, status, type | no body
+POST /api/v2/spaces | no query | body: {alias, copySpaceAccessConfiguration, createPrivateSpace, description, key, name*, roleAssignments, templateKey}
+GET /api/v2/spaces/{id} | query: description-format, include-icon, include-labels, include-operations, include-permissions, include-properties, include-role-assignments | no body
+GET /api/v2/spaces/{id}/blogposts | query: body-format, cursor, limit<=250, sort, status, title | no body
+DELETE /api/v2/spaces/{id}/classification-level/default | no query | no body
+GET /api/v2/spaces/{id}/classification-level/default | no query | no body
+PUT /api/v2/spaces/{id}/classification-level/default | no query | body: {id*}
+GET /api/v2/spaces/{id}/content/labels | query: cursor, limit<=250, prefix, sort | no body
+GET /api/v2/spaces/{id}/custom-content | query: body-format, cursor, limit<=250, type* | no body
+GET /api/v2/spaces/{id}/labels | query: cursor, limit<=250, prefix, sort | no body
+GET /api/v2/spaces/{id}/operations | no query | no body
+GET /api/v2/spaces/{id}/pages | query: body-format, cursor, depth, limit<=250, sort, status, title | no body
+GET /api/v2/spaces/{id}/permissions | query: cursor, limit<=250 | no body
+GET /api/v2/spaces/{id}/role-assignments | query: cursor, limit<=250, principal-id, principal-type, role-id, role-type | no body
+POST /api/v2/spaces/{id}/role-assignments | no query | body: []
+GET /api/v2/spaces/{space-id}/properties | query: cursor, key, limit<=250 | no body
+POST /api/v2/spaces/{space-id}/properties | no query | body: {key, value}
+DELETE /api/v2/spaces/{space-id}/properties/{property-id} | no query | no body
+GET /api/v2/spaces/{space-id}/properties/{property-id} | no query | no body
+PUT /api/v2/spaces/{space-id}/properties/{property-id} | no query | body: {key, value, version}
+GET /api/v2/tasks | query: assigned-to, blogpost-id, body-format, completed-at-from, completed-at-to, completed-by, created-at-from, created-at-to, created-by, cursor, due-at-from, due-at-to, include-blank-tasks, limit<=250, page-id, space-id, status, task-id | no body
+GET /api/v2/tasks/{id} | query: body-format | no body
+PUT /api/v2/tasks/{id} | query: body-format | body: {assignedTo, blogPostId, completedAt, completedBy, createdAt, createdBy, dueAt, id, localId, pageId, spaceId, status*, updatedAt}
+POST /api/v2/user/access/check-access-by-email | no query | body: {emails*}
+POST /api/v2/user/access/invite-by-email | no query | body: {emails*}
+POST /api/v2/users-bulk | no query | body: {accountIds*}
+POST /api/v2/whiteboards | query: private | body: {locale, parentId, spaceId*, templateKey, title}
+DELETE /api/v2/whiteboards/{id} | no query | no body
+GET /api/v2/whiteboards/{id} | query: include-collaborators, include-direct-children, include-operations, include-properties | no body
+GET /api/v2/whiteboards/{id}/ancestors | query: limit<=250 | no body
+GET /api/v2/whiteboards/{id}/classification-level | no query | no body
+PUT /api/v2/whiteboards/{id}/classification-level | no query | body: {id*, status*}
+POST /api/v2/whiteboards/{id}/classification-level/reset | no query | body: {status*}
+GET /api/v2/whiteboards/{id}/descendants | query: cursor, depth, limit<=250 | no body
+GET /api/v2/whiteboards/{id}/direct-children | query: cursor, limit<=250, sort | no body
+GET /api/v2/whiteboards/{id}/operations | no query | no body
+DELETE /api/v2/whiteboards/{id}/permissions | query: allow-self-lockout, operation, principal-id, principal-type | no body
+GET /api/v2/whiteboards/{id}/permissions | query: cursor, limit<=250, operation, principal-id, principal-type | no body
+POST /api/v2/whiteboards/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+PUT /api/v2/whiteboards/{id}/permissions | query: allow-self-lockout | body: {permissions*}
+GET /api/v2/whiteboards/{id}/properties | query: cursor, key, limit<=250, sort | no body
+POST /api/v2/whiteboards/{id}/properties | no query | body: {key, value}
+GET /api/v2/whiteboards/{id}/restriction-state | no query | no body
+PUT /api/v2/whiteboards/{id}/restriction-state | query: allow-self-lockout | body: {state*}
+DELETE /api/v2/whiteboards/{whiteboard-id}/properties/{property-id} | no query | no body
+GET /api/v2/whiteboards/{whiteboard-id}/properties/{property-id} | no query | no body
+PUT /api/v2/whiteboards/{whiteboard-id}/properties/{property-id} | no query | body: {key, value, version}

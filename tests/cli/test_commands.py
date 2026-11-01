@@ -28,9 +28,10 @@ class PageCommandTest(unittest.TestCase):
         data = run_cli("page", "2002", "--json").json()
         self.assertEqual(
             set(data),
-            {"id", "title", "status", "spaceId", "spaceKey", "parentId", "url", "version", "created", "updated", "labels", "author", "owner", "body"},
+            {"id", "title", "status", "spaceId", "spaceKey", "parentId", "parentType", "url", "version", "created", "updated", "labels", "author", "owner", "body"},
         )
         self.assertEqual((data["id"], data["spaceKey"], data["parentId"], data["labels"]), ("2002", "ENG", "2001", ["release", "notes"]))
+        self.assertEqual((data["parentType"], run_cli("page", "2001", "--json").json()["parentType"]), ("page", None))  # a page without a parent has no parent type
         self.assertEqual((data["author"], data["owner"], data["version"]["author"]), (None, None, None))
         self.assertEqual(data["version"]["number"], 3)
         self.assertEqual(data["body"]["format"], "markdown")
@@ -149,7 +150,7 @@ class ListCommandsTest(unittest.TestCase):
             ["Engineering Home  [2001]", "  Architecture  [2003]", "    ADR 0001  [2004]", "  Plain page  [2005]", "  Release notes  [2002]"],
         )
         data = run_cli("tree", "2001", "--depth", "1", "--json").json()
-        self.assertEqual((data["root"], data["depth"], data["truncated"]), ({"id": "2001", "title": "Engineering Home", "spaceKey": "ENG"}, 1, False))
+        self.assertEqual((data["root"], data["depth"], data["truncated"]), ({"id": "2001", "title": "Engineering Home", "type": "page", "spaceKey": "ENG"}, 1, False))
         self.assertEqual([(node["id"], node["parentId"], node["depth"]) for node in data["nodes"]], [("2003", "2001", 1), ("2005", "2001", 1), ("2002", "2001", 1)])
         self.assertIn("(no pages below this one)", run_cli("tree", "2004").out)
         self.assertEqual(run_cli("tree", "2001", "--depth", "11").code, 2)
@@ -286,7 +287,7 @@ class PartsCommandsTest(unittest.TestCase):
         self.assertIn("--- #4003 inline [open]", run_cli("comments", "2002", "--inline").out)
         data = run_cli("comments", "2002", "--inline", "--json").json()
         self.assertEqual((data["pageId"], data["count"]), ("2002", 3))
-        self.assertEqual(set(data["comments"][0]), {"id", "kind", "updated", "parentId", "resolution", "author", "body"})
+        self.assertEqual(set(data["comments"][0]), {"id", "kind", "updated", "parentId", "resolution", "author", "authorRef", "byMe", "body"})  # authorRef and byMe were added
         self.assertEqual((data["comments"][2]["kind"], data["comments"][2]["resolution"]), ("inline", "open"))
         self.assertEqual(run_cli("comments", "2003").out, "No comments.\n")
         self.assertIn("Alex Example", run_cli("comments", "2002", "--with-users").out)
@@ -303,7 +304,10 @@ class PartsCommandsTest(unittest.TestCase):
         self.assertIn("10 B", out)
         data = run_cli("attachments", "2002", "--limit", "1", "--json").json()
         self.assertEqual((data["count"], data["nextCursor"]), (1, "1"))
-        self.assertEqual(set(data["attachments"][0]), {"id", "title", "mediaType", "size", "version", "created", "pageId", "downloadLink", "comment"})
+        self.assertEqual(
+            set(data["attachments"][0]),
+            {"id", "title", "mediaType", "size", "version", "created", "updated", "pageId", "blogPostId", "downloadLink", "comment"},  # `updated` and `blogPostId` came with the attachments area
+        )
         self.assertEqual(run_cli("attachments", "2003").out, "No attachments.\n")
 
     def test_download(self):
@@ -314,7 +318,7 @@ class PartsCommandsTest(unittest.TestCase):
         self.assertEqual(files.files["out/diagram.png"], b"PNGDATA123")
         data = run_cli("download", "2002", "--name", "notes.txt", "--name", "diagram.png", "--out", "more", "--json", files=files).json()
         self.assertEqual((data["count"], data["dryRun"]), (2, False))
-        self.assertEqual(set(data["files"][0]), {"attachmentId", "name", "path", "size", "action"})
+        self.assertEqual(set(data["files"][0]), {"attachmentId", "name", "path", "size", "version", "action"})  # `version` came with the attachments area
         self.assertEqual(files.files["more/notes.txt"], b"hello notes\n")
         again = run_cli("download", "att5001", "--out", "out", files=files)
         self.assertEqual(again.code, 1)
@@ -383,6 +387,23 @@ class ChangeCommandsTest(unittest.TestCase):
         out = run_cli("update", "2005", "--title", "Plain page").out
         self.assertIn("Nothing to change", out)
         self.assertEqual(run_cli("update", "2005", "--title", "Plain page", "--json").json()["action"], "unchanged")
+
+    def test_an_empty_file_or_pipe_does_not_blank_the_body(self):
+        """An editor that saved nothing, or a pipe that failed, must not clear a page; `--body ''` on the command line does it on purpose."""
+        gateway = FakeGateway()
+        for argv, stdin, files in (
+            (("update", "2005", "--file", "empty.md"), "", MemoryFiles({"empty.md": "\n  \n"})),
+            (("update", "2005", "--file", "-"), "", None),
+            (("update", "2005", "--file", "-", "--append"), "  \n", None),
+        ):
+            with self.subTest(argv=argv):
+                result = run_cli(*argv, stdin=stdin, files=files, gateway=gateway)
+                self.assertEqual(result.code, 2)
+                self.assertIn("is empty", result.err)
+                self.assertIn("--body ''", result.err)
+        self.assertEqual(gateway.called("update_page"), [])
+        self.assertEqual(gateway.pages["2005"].body, "<p>Just a paragraph &amp; text.</p>")
+        self.assertEqual(run_cli("update", "2005", "--body", "", "--dry-run").code, 0)
 
     def test_move(self):
         gateway = FakeGateway()

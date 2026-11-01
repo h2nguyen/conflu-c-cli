@@ -1,4 +1,5 @@
 """Use cases that read: pages, spaces, search, comments, labels, attachments, export and the setup."""
+import json
 import unittest
 from dataclasses import replace
 
@@ -16,6 +17,7 @@ from tests.support.fakes import (
     ACCOUNT,
     BASE,
     FakeGateway,
+    MemoryCache,
     MemoryConfigStore,
     MemoryFiles,
     RecordingDiagnostics,
@@ -600,6 +602,17 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("read:space:confluence", checks["spaces"].hint)
         self.assertEqual(checks["space"].status, "fail")
         self.assertEqual(self.checks()["space"].status, "warn")
+        self.assertEqual(checks["api"].status, "warn")  # v1 answered (the current user), v2 did not (the spaces)
+        self.assertIn("v1 answers and v2 does not", checks["api"].detail)
+        self.assertIn("Data Center", checks["api"].hint)
+
+    def test_the_api_check_says_which_apis_answer_and_what_the_cli_is_written_for(self):
+        check = self.checks()["api"]
+        self.assertEqual(check.status, "ok")
+        for text in ("REST API v2 and v1 answer", "2026-10-30", "v2 2.0.0", "v1 1.0.0"):
+            self.assertIn(text, check.detail)
+        skipped = self.checks(Settings())
+        self.assertNotIn("api", skipped)  # it is an online check: nothing to say until the configuration is fixed
 
     def test_privacy_is_reported(self):
         self.assertIn("never printed", self.checks(default_settings(hide_users=True))["privacy"].detail)
@@ -607,6 +620,361 @@ class DoctorTest(unittest.TestCase):
     def test_a_missing_config_file_is_a_warning(self):
         check = self.checks(files=MemoryFiles())["config file"]
         self.assertEqual(check.status, "warn")
+
+
+def configured(**values):
+    """Settings as they come from the configuration, the environment and the profile."""
+    return Settings.from_mapping({"CONFLUENCE_BASE_URL": BASE, "CONFLUENCE_EMAIL": "user@example.com", "CONFLUENCE_API_TOKEN": "secret-token", **values})
+
+
+ONLINE = ["connection", "spaces", "api", "space"]
+LOCAL = ["runtime", "config file", "base url", "email", "token", "tls"]
+
+
+class DoctorRunTest(unittest.TestCase):
+    """`--quick`, `--cached AGE`, the privacy check and the launcher: what the use case does, without the command line."""
+
+    def run_doctor(self, gateway=None, *, cache=None, runtime=None, options=None, files=None, **setting_values):
+        app = build_app(
+            gateway=gateway or FakeGateway(),
+            files=files or MemoryFiles({"memory://config": "x"}),
+            settings=configured(**setting_values),
+            cache=cache,
+            runtime=runtime,
+        )
+        run = app.doctor.run(**(options or {}))
+        return run, {check.name: check for check in run.checks}
+
+    def test_the_full_run_has_the_checks_in_this_order(self):
+        run, checks = self.run_doctor(CONFLUENCE_SPACE="ENG")
+        self.assertEqual(list(checks), [*LOCAL, *ONLINE, "privacy"])
+        self.assertEqual((run.cached, run.cached_at), (False, ""))
+
+    def test_quick_asks_twice_at_most_and_leaves_out_the_current_space(self):
+        gateway = FakeGateway()
+        run, checks = self.run_doctor(gateway, options={"quick": True}, CONFLUENCE_SPACE="ENG")
+        self.assertEqual([call[0] for call in gateway.calls], ["current_user", "list_spaces"])  # v1, then v2
+        self.assertEqual(list(checks), [*LOCAL, "connection", "spaces", "api", "privacy"])
+        self.assertEqual(checks["api"].status, "ok")
+        self.assertFalse(run.cached)
+
+    def test_quick_leaves_the_space_check_out_when_there_is_no_current_space_too(self):
+        gateway = FakeGateway()
+        _, checks = self.run_doctor(gateway, options={"quick": True})
+        self.assertEqual(len(gateway.calls), 2)
+        self.assertNotIn("space", checks)
+
+    def test_quick_still_stops_at_a_login_that_fails(self):
+        gateway = FakeGateway()
+        gateway.errors["current_user"] = NotFoundError("gone")
+        run, checks = self.run_doctor(gateway, options={"quick": True})
+        self.assertEqual(checks["connection"].status, "fail")
+        self.assertEqual(len(gateway.calls), 1)
+        self.assertNotIn("spaces", checks)
+
+    def test_a_second_run_with_cached_asks_nothing_and_says_when_the_first_one_was(self):
+        cache, gateway = MemoryCache(), FakeGateway()
+        first, _ = self.run_doctor(gateway, cache=cache, options={"cached_for": 600}, CONFLUENCE_SPACE="ENG")
+        self.assertFalse(first.cached)
+        asked = len(gateway.calls)
+        self.assertGreater(asked, 0)
+        second, checks = self.run_doctor(gateway, cache=cache, options={"cached_for": 600}, CONFLUENCE_SPACE="ENG")
+        self.assertTrue(second.cached)
+        self.assertEqual(second.cached_at, "2026-10-15T08:00:00+00:00")  # the time of the fake clock
+        self.assertEqual(len(gateway.calls), asked)
+        self.assertEqual(list(checks), [*LOCAL, *ONLINE, "privacy"])
+        self.assertEqual([check.status for check in second.checks], [check.status for check in first.checks])
+
+    def test_the_local_checks_are_made_again_whatever_is_reused(self):
+        cache = MemoryCache()
+        self.run_doctor(cache=cache, options={"cached_for": 600})
+        run, checks = self.run_doctor(cache=cache, options={"cached_for": 600}, files=MemoryFiles(), CONFLUENCE_HIDE_USERS="true")
+        self.assertTrue(run.cached)
+        self.assertEqual(checks["config file"].status, "warn")  # this run has no config file
+        self.assertIn("never printed", checks["privacy"].detail)
+
+    def test_nothing_is_reused_without_cached(self):
+        cache, gateway = MemoryCache(), FakeGateway()
+        self.run_doctor(gateway, cache=cache)
+        asked = len(gateway.calls)
+        for options in ({}, {"cached_for": 0}, {"cached_for": 0.0}):
+            with self.subTest(options=options):
+                run, _ = self.run_doctor(gateway, cache=cache, options=options)
+                self.assertFalse(run.cached)
+        self.assertEqual(len(gateway.calls), asked * 4)
+
+    def test_a_run_that_is_older_than_the_age_is_not_reused(self):
+        cache, gateway = MemoryCache(), FakeGateway()
+        self.run_doctor(gateway, cache=cache)
+        ((key, _),) = cache.values.items()
+        cache.ages[key] = 599.0
+        young, _ = self.run_doctor(gateway, cache=cache, options={"cached_for": 600})
+        self.assertTrue(young.cached)
+        cache.ages[key] = 601.0
+        old, _ = self.run_doctor(gateway, cache=cache, options={"cached_for": 600})
+        self.assertFalse(old.cached)
+        again, _ = self.run_doctor(gateway, cache=cache, options={"cached_for": 600})  # the run that was just made is new
+        self.assertTrue(again.cached)
+
+    def test_a_run_with_a_failure_is_never_remembered(self):
+        cache, gateway = MemoryCache(), FakeGateway()
+        gateway.errors["get_space"] = NotFoundError("gone")
+        run, checks = self.run_doctor(gateway, cache=cache, options={"cached_for": 600}, CONFLUENCE_SPACE="NOPE")
+        self.assertEqual(checks["space"].status, "fail")
+        self.assertEqual(cache.values, {})
+        again, _ = self.run_doctor(gateway, cache=cache, options={"cached_for": 600}, CONFLUENCE_SPACE="NOPE")
+        self.assertFalse(again.cached)
+
+    def test_a_failed_connection_is_not_remembered_either(self):
+        cache, gateway = MemoryCache(), FakeGateway()
+        gateway.errors["current_user"] = NotFoundError("gone")
+        self.run_doctor(gateway, cache=cache)
+        self.assertEqual(cache.values, {})
+
+    def test_the_local_failures_stop_before_anything_is_asked_or_remembered(self):
+        cache, gateway = MemoryCache(), FakeGateway()
+        run, checks = self.run_doctor(gateway, cache=cache, options={"cached_for": 600}, CONFLUENCE_API_TOKEN="")
+        self.assertEqual((checks["token"].status, checks["connection"].status), ("fail", "warn"))
+        self.assertEqual((gateway.calls, cache.values, run.cached), ([], {}, False))
+
+    def test_quick_and_full_runs_are_kept_apart(self):
+        cache, gateway = MemoryCache(), FakeGateway()
+        self.run_doctor(gateway, cache=cache, options={"quick": True})
+        full, _ = self.run_doctor(gateway, cache=cache, options={"cached_for": 600})
+        self.assertFalse(full.cached)
+        quick, _ = self.run_doctor(gateway, cache=cache, options={"quick": True, "cached_for": 600})
+        self.assertTrue(quick.cached)
+
+    def test_a_run_is_not_reused_for_another_site_account_token_or_space(self):
+        cache, gateway = MemoryCache(), FakeGateway()
+        self.run_doctor(gateway, cache=cache, options={"cached_for": 600}, CONFLUENCE_SPACE="ENG")
+        for name, value in (
+            ("CONFLUENCE_BASE_URL", "https://wiki.example.com/wiki"),
+            ("CONFLUENCE_EMAIL", "other@example.com"),
+            ("CONFLUENCE_API_TOKEN", "another-token"),
+            ("CONFLUENCE_SPACE", "DOCS"),
+            ("CONFLUENCE_INSECURE", "true"),
+        ):
+            with self.subTest(name=name):
+                run, _ = self.run_doctor(gateway, cache=cache, options={"cached_for": 600}, **{"CONFLUENCE_SPACE": "ENG", name: value})
+                self.assertFalse(run.cached)
+        same, _ = self.run_doctor(gateway, cache=cache, options={"cached_for": 600}, CONFLUENCE_SPACE="ENG")
+        self.assertTrue(same.cached)
+
+    def test_the_cache_holds_the_checks_and_nothing_else(self):
+        cache = MemoryCache()
+        self.run_doctor(cache=cache, CONFLUENCE_SPACE="ENG")
+        ((namespace, key), text) = next(iter(cache.values.items()))
+        self.assertEqual(namespace, "doctor")
+        record = json.loads(text)
+        self.assertEqual(set(record), {"at", "checks"})
+        self.assertEqual([check["name"] for check in record["checks"]], ONLINE)
+        for secret in ("secret-token", "user@example.com", "Alex Example", ACCOUNT):
+            self.assertNotIn(secret, text + key)  # not the token, not the account, not a person, not even as part of the name of the record
+        self.assertRegex(key, r"^[0-9a-f]{16}$")
+
+    def test_a_record_that_cannot_be_read_is_ignored(self):
+        for damaged in (
+            "not json",
+            "[" * 100000,  # nests deeper than the decoder reads: a RecursionError, not a crash
+            "[]",
+            "{}",
+            '{"at": "x", "checks": [{"nope": 1}]}',
+            '{"at": "x", "checks": 5}',
+            '{"at": "x", "checks": []}',
+            '{"at": "x", "checks": ["connection"]}',
+            '{"at": "x", "checks": [{"name": "connection", "status": "bogus", "detail": "", "hint": ""}]}',
+            '{"at": "x", "checks": [{"name": "connection", "status": "fail", "detail": "refused", "hint": ""}]}',  # a run with a failure is never kept
+        ):
+            cache, gateway = MemoryCache(), FakeGateway()
+            self.run_doctor(gateway, cache=cache)
+            ((key, _),) = cache.values.items()
+            cache.values[key] = damaged
+            with self.subTest(damaged=damaged[:60]):
+                run, _ = self.run_doctor(gateway, cache=cache, options={"cached_for": 600})
+                self.assertFalse(run.cached)
+
+    def test_without_a_cache_cached_is_ignored(self):
+        gateway = FakeGateway()
+        self.run_doctor(gateway, options={"cached_for": 600})
+        run, _ = self.run_doctor(gateway, options={"cached_for": 600})
+        self.assertFalse(run.cached)
+        self.assertEqual(len(gateway.called("current_user")), 2)
+
+    def test_execute_is_the_list_of_checks(self):
+        app = build_app(files=MemoryFiles({"memory://config": "x"}))
+        self.assertEqual([check.name for check in app.doctor.execute(quick=True)], [*LOCAL, "connection", "spaces", "api", "privacy"])
+
+    # -- privacy ---------------------------------------------------------------------------------
+
+    def test_privacy_is_ok_when_people_are_hidden_and_names_the_profile_that_did_it(self):
+        _, plain = self.run_doctor(CONFLUENCE_HIDE_USERS="true")
+        self.assertEqual(plain["privacy"].status, "ok")
+        self.assertNotIn("profile", plain["privacy"].detail)
+        _, by_profile = self.run_doctor(CONFLUENCE_PROFILE="agent")
+        self.assertEqual(by_profile["privacy"].status, "ok")
+        self.assertIn("(profile agent)", by_profile["privacy"].detail)
+
+    def test_privacy_is_a_warning_under_the_profile_when_people_can_still_be_shown(self):
+        _, checks = self.run_doctor(CONFLUENCE_PROFILE="agent", CONFLUENCE_HIDE_USERS="false")
+        self.assertEqual(checks["privacy"].status, "warn")
+        self.assertIn("CONFLUENCE_HIDE_USERS is set to false", checks["privacy"].detail)
+        self.assertIn("conflu config unset CONFLUENCE_HIDE_USERS", checks["privacy"].hint)
+
+    def test_privacy_is_ok_as_it_was_without_a_profile_and_without_the_policy(self):
+        run, checks = self.run_doctor()
+        self.assertEqual(checks["privacy"].status, "ok")
+        self.assertIn("people can be shown", checks["privacy"].detail)
+        self.assertFalse(any(check.status == "fail" for check in run.checks))
+
+    def test_strict_privacy_fails_whenever_people_can_be_shown(self):
+        for values in ({}, {"CONFLUENCE_PROFILE": "agent", "CONFLUENCE_HIDE_USERS": "false"}):
+            with self.subTest(values=values):
+                run, checks = self.run_doctor(options={"strict_privacy": True}, **values)
+                self.assertEqual(checks["privacy"].status, "fail")
+                self.assertIn("CONFLUENCE_HIDE_USERS=true", checks["privacy"].hint)
+                self.assertIn("CONFLUENCE_PROFILE=agent", checks["privacy"].hint)
+        for values in ({"CONFLUENCE_HIDE_USERS": "true"}, {"CONFLUENCE_PROFILE": "agent"}):
+            with self.subTest(values=values):
+                _, checks = self.run_doctor(options={"strict_privacy": True}, **values)
+                self.assertEqual(checks["privacy"].status, "ok")
+
+    def test_strict_privacy_is_checked_even_when_the_configuration_is_broken(self):
+        _, checks = self.run_doctor(options={"strict_privacy": True}, CONFLUENCE_API_TOKEN="")
+        self.assertEqual((checks["token"].status, checks["privacy"].status), ("fail", "fail"))
+
+    # -- the launcher ----------------------------------------------------------------------------
+
+    def test_the_launcher_check_is_there_only_when_the_runtime_says(self):
+        _, silent = self.run_doctor()
+        self.assertNotIn("launcher", silent)
+
+    def test_the_launcher_that_is_found_is_named(self):
+        gateway = FakeGateway()
+        run, checks = self.run_doctor(gateway, runtime={"version": "1.0.0", "python": "3.13", "launcher": "/opt/tools/bin/conflu"})
+        self.assertEqual(checks["launcher"].status, "ok")
+        self.assertIn("/opt/tools/bin/conflu", checks["launcher"].detail)
+        self.assertEqual(list(checks)[: len(LOCAL) + 1], [*LOCAL, "launcher"])  # after the local checks, before the online ones
+
+    def test_a_launcher_that_is_not_on_the_path_is_a_warning_that_says_how_this_run_started_and_what_to_do(self):
+        gateway = FakeGateway()
+        facts = {"version": "1.0.0", "python": "3.13", "launcher": "", "program": "/work/conflu-c-cli/conflu.py", "install_script": "/work/conflu-c-cli/install.py"}
+        run, checks = self.run_doctor(gateway, runtime=facts)
+        check = checks["launcher"]
+        self.assertEqual(check.status, "warn")
+        self.assertIn("`conflu` is not found on the PATH of this shell", check.detail)
+        self.assertIn("/work/conflu-c-cli/conflu.py", check.detail)
+        self.assertIn('python "/work/conflu-c-cli/install.py" --bin-dir DIR', check.hint)
+        self.assertIn("add the folder of the launcher to the PATH", check.hint)
+        self.assertGreater(len(gateway.calls), 0)  # a warning does not stop the online checks
+        self.assertFalse(any(item.status == "fail" for item in run.checks))  # and does not fail the doctor
+
+    def test_without_an_installer_the_hint_points_to_the_source_folder(self):
+        facts = {"version": "1.0.0", "python": "3.13", "launcher": "", "program": "", "install_script": ""}
+        _, checks = self.run_doctor(runtime=facts)
+        self.assertIn("python install.py --bin-dir DIR, run in the source folder of conflu-c-cli", checks["launcher"].hint)
+        self.assertNotIn("this run was started as", checks["launcher"].detail)
+
+    def test_the_launcher_check_asks_nothing_of_confluence(self):
+        gateway = FakeGateway()
+        app = build_app(gateway=gateway, runtime={"version": "1.0.0", "python": "3.13", "launcher": ""})
+        self.assertEqual(app.doctor._launcher().status, "warn")
+        self.assertEqual(gateway.calls, [])
+
+    def test_a_program_is_told_to_run_python_and_not_a_launcher_and_why(self):
+        """`cmd.exe` splits the command line before `conflu.cmd` runs: an argument with a quote in it can run a second command, whatever the batch file does."""
+        entry = "/work/conflu-c-cli/conflu.py"
+        for launcher in ("", "C:/tools/bin/conflu.cmd", "C:/tools/bin/conflu.BAT"):
+            with self.subTest(launcher=launcher):
+                facts = {"version": "1.0.0", "python": "3.13", "launcher": launcher, "program": "", "install_script": "", "entry": entry}
+                _, checks = self.run_doctor(runtime=facts)
+                hint = checks["launcher"].hint
+                self.assertIn(f'a program that starts commands from an argument list (an agent harness) should not run a launcher but `python "{entry}" ARGS`', hint)
+                self.assertIn("cmd.exe splits the command line before `conflu.cmd` runs", hint)
+                self.assertIn("run a second command", hint)
+                self.assertIn("The launchers are for people at a shell.", hint)
+                self.assertEqual(checks["launcher"].status, "ok" if launcher else "warn")  # advice, not a failure
+
+    def test_a_launcher_that_is_no_batch_file_needs_no_such_advice(self):
+        facts = {"version": "1.0.0", "python": "3.13", "launcher": "/opt/tools/bin/conflu", "program": "", "install_script": "", "entry": "/work/conflu.py"}
+        _, checks = self.run_doctor(runtime=facts)
+        self.assertEqual((checks["launcher"].status, checks["launcher"].hint), ("ok", ""))
+
+    def test_without_the_entry_the_advice_names_the_install_folder(self):
+        facts = {"version": "1.0.0", "python": "3.13", "launcher": "", "program": "", "install_script": ""}
+        _, checks = self.run_doctor(runtime=facts)
+        self.assertIn('`python "<install folder>\\conflu.py" ARGS`', checks["launcher"].hint)
+
+    def test_the_advice_keeps_what_the_hint_said_before(self):
+        facts = {"version": "1.0.0", "python": "3.13", "launcher": "", "program": "", "install_script": "/work/conflu-c-cli/install.py", "entry": "/work/conflu-c-cli/conflu.py"}
+        _, checks = self.run_doctor(runtime=facts)
+        self.assertIn('python "/work/conflu-c-cli/install.py" --bin-dir DIR', checks["launcher"].hint)
+        self.assertIn("add the folder of the launcher to the PATH", checks["launcher"].hint)
+
+    # -- an address with credentials ------------------------------------------------------------
+
+    def test_an_address_with_credentials_fails_and_is_never_repeated(self):
+        for address in (
+            "https://" + "alex:s3cr3tpw" + "@example.atlassian.net/wiki",
+            "https://" + "alex" + "@example.atlassian.net/wiki",
+            "https://" + "alex:pa/s3cr3tpw" + "@example.atlassian.net/wiki",
+            "https://" + "alex:pa?s3cr3tpw" + "@example.atlassian.net/wiki",
+            "https://example.atlassian.net/wiki/" + "alex:s3cr3tpw" + "@x",
+        ):
+            with self.subTest(address=address.replace("s3cr3tpw", "<secret>")):
+                run, checks = self.run_doctor(CONFLUENCE_BASE_URL=address)
+                check = checks["base url"]
+                self.assertEqual(check.status, "fail")
+                self.assertIn("user name or password", check.detail)
+                self.assertNotIn("s3cr3tpw", repr(run.checks))
+                self.assertNotIn("alex", check.detail + check.hint)
+
+
+class ConfigEntriesTest(unittest.TestCase):
+    """`conflu config show`: where each value comes from, and what a profile sets."""
+
+    def entries(self, stored=None, environ=None, **values):
+        stored = dict(stored or {})
+        app = build_app(settings=configured(**{**stored, **dict(environ or {}), **values}), store=MemoryConfigStore(stored), environ=environ)
+        return {entry.name: entry for entry in app.config.entries()}
+
+    def test_what_the_profile_sets_is_listed_with_the_source_profile(self):
+        entries = self.entries({"CONFLUENCE_PROFILE": "agent"})
+        self.assertEqual((entries["CONFLUENCE_PROFILE"].value, entries["CONFLUENCE_PROFILE"].source), ("agent", "config file"))
+        self.assertEqual((entries["CONFLUENCE_HIDE_USERS"].value, entries["CONFLUENCE_HIDE_USERS"].source), ("true", "profile"))
+        self.assertEqual((entries["CONFLUENCE_OUTPUT"].value, entries["CONFLUENCE_OUTPUT"].source), ("json", "profile"))
+
+    def test_a_setting_of_the_person_is_shown_as_such_even_when_it_is_false(self):
+        entries = self.entries({"CONFLUENCE_PROFILE": "agent", "CONFLUENCE_HIDE_USERS": "false", "CONFLUENCE_OUTPUT": "text"})
+        self.assertEqual((entries["CONFLUENCE_HIDE_USERS"].value, entries["CONFLUENCE_HIDE_USERS"].source), ("false", "config file"))
+        self.assertEqual((entries["CONFLUENCE_OUTPUT"].value, entries["CONFLUENCE_OUTPUT"].source), ("text", "config file"))
+
+    def test_the_environment_wins_and_is_named(self):
+        entries = self.entries({"CONFLUENCE_PROFILE": "agent"}, environ={"CONFLUENCE_HIDE_USERS": "false"})
+        self.assertEqual((entries["CONFLUENCE_HIDE_USERS"].value, entries["CONFLUENCE_HIDE_USERS"].source), ("false", "environment"))
+        from_environment = self.entries(environ={"CONFLUENCE_PROFILE": "agent"})
+        self.assertEqual((from_environment["CONFLUENCE_PROFILE"].source, from_environment["CONFLUENCE_HIDE_USERS"].source), ("environment", "profile"))
+
+    def test_an_empty_value_counts_as_not_set_so_the_profile_still_applies(self):
+        entries = self.entries({"CONFLUENCE_PROFILE": "agent", "CONFLUENCE_HIDE_USERS": ""})
+        self.assertEqual((entries["CONFLUENCE_HIDE_USERS"].value, entries["CONFLUENCE_HIDE_USERS"].source), ("true", "profile"))
+
+    def test_without_a_profile_the_sources_are_what_they_were(self):
+        entries = self.entries({"CONFLUENCE_SPACE": "ENG"})
+        self.assertEqual({entry.source for name, entry in entries.items() if name != "CONFLUENCE_SPACE"}, {"default"})
+        self.assertEqual(entries["CONFLUENCE_SPACE"].source, "config file")
+
+    def test_an_address_with_credentials_is_shown_without_them(self):
+        for address, shown in (
+            ("https://" + "alex:s3cr3tpw" + "@example.atlassian.net/wiki", "https://********@example.atlassian.net/wiki"),
+            ("https://" + "alex:pa/s3cr3tpw" + "@example.atlassian.net/wiki", "(not shown: it holds an @ after the host name)"),
+        ):
+            for place in ("config file", "environment"):
+                with self.subTest(place=place, shown=shown):
+                    entries = self.entries({"CONFLUENCE_BASE_URL": address} if place == "config file" else None, environ={"CONFLUENCE_BASE_URL": address} if place == "environment" else None)
+                    entry = entries["CONFLUENCE_BASE_URL"]
+                    self.assertEqual((entry.value, entry.source), (shown, place))
+                    self.assertNotIn("s3cr3tpw", repr(list(entries.values())))
 
 
 class RawApiTest(unittest.TestCase):

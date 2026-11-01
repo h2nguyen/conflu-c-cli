@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Writes the reference documentation from the command descriptions, so the docs cannot drift.
 
-    python scripts/generate_docs.py            write docs/reference/*.md and the command table in README.md
+    python scripts/generate_docs.py            write docs/reference/*.md, the command table in README.md and the compact reference in the skill
     python scripts/generate_docs.py --check    fail when a generated file is out of date (CI, release check)
 
 The command table in README.md sits between the markers `<!-- commands:start -->` and
-`<!-- commands:end -->`; everything else in the README is written by hand.
+`<!-- commands:end -->`; the compact reference of a few commands that the skill carries sits between
+`<!-- reference:start -->` and `<!-- reference:end -->`; everything else in both files is written by hand.
 """
 from __future__ import annotations
 
@@ -16,12 +17,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from conflu_c_cli.adapters.driving.cli.help import commands_markdown, exit_codes_markdown, settings_markdown  # noqa: E402
+from conflu_c_cli.adapters.driving.cli.help import commands_markdown, exit_codes_markdown, render_compact_reference, settings_markdown  # noqa: E402
 from conflu_c_cli.adapters.driving.cli.registry import all_commands  # noqa: E402
 from conflu_c_cli.adapters.driving.cli.spec import GROUP_ORDER  # noqa: E402
 from conflu_c_cli.version import __version__  # noqa: E402
 
 START, END = "<!-- commands:start -->", "<!-- commands:end -->"
+SKILL = ROOT / "skills" / "conflu-c-cli" / "SKILL.md"
+REFERENCE_START, REFERENCE_END = "<!-- reference:start -->", "<!-- reference:end -->"
+SKILL_REFERENCE = ("page", "search", "update", "create", "comment", "api")  # the commands whose arguments an agent needs most often
 
 
 def command_table() -> str:
@@ -44,6 +48,16 @@ def with_command_table(readme: str) -> str:
     return f"{head}{START}\n\n{command_table()}\n\n{END}{tail}"
 
 
+def with_compact_reference(skill: str) -> str:
+    """The skill carries the arguments and all options of the commands an agent needs most, between its markers."""
+    if REFERENCE_START not in skill or REFERENCE_END not in skill:
+        raise SystemExit(f"{SKILL.relative_to(ROOT)} needs the markers {REFERENCE_START} and {REFERENCE_END} around the compact reference.")
+    head, rest = skill.split(REFERENCE_START, 1)
+    _, tail = rest.split(REFERENCE_END, 1)
+    block = render_compact_reference(all_commands(), SKILL_REFERENCE)
+    return f"{head}{REFERENCE_START}\n\n```text\n{block}\n```\n\n{REFERENCE_END}{tail}"
+
+
 def generated() -> dict[Path, str]:
     commands = all_commands()
     files = {
@@ -53,6 +67,7 @@ def generated() -> dict[Path, str]:
     }
     readme = ROOT / "README.md"
     files[readme] = with_command_table(readme.read_text(encoding="utf-8"))
+    files[SKILL] = with_compact_reference(SKILL.read_text(encoding="utf-8"))
     return files
 
 

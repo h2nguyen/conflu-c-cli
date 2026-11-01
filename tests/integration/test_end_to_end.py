@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 from conflu_c_cli.adapters.driving.cli.main import run
 from conflu_c_cli.bootstrap import create_application
@@ -36,9 +37,16 @@ class EndToEnd(unittest.TestCase):
         self.addCleanup(holder.cleanup)
         self.root = Path(holder.name)
         self.config = self.root / "config" / "conflu-c-cli" / "config"
+        # The profile folder of the person who runs the tests must not count as a home folder: its configuration would be the one in use, and
+        # the cache of `doctor` would be written there. In this process Path.home() is patched; a child process gets the profile through USERPROFILE (and HOME).
+        profile = self.root / "profile"
+        patcher = mock.patch("pathlib.Path.home", return_value=profile)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.env = {
             "CONFLUENCE_CONFIG_FILE": str(self.config),
             "HOME": str(self.root),
+            "USERPROFILE": str(profile),
             "CONFLUENCE_BASE_URL": self.mock.base_url,
             "CONFLUENCE_EMAIL": self.mock.email,
             "CONFLUENCE_API_TOKEN": self.mock.token,
@@ -98,9 +106,11 @@ class SetupFlowTest(EndToEnd):
         ping = self.cli("ping", env=file_env, **bare)
         self.assertEqual(ping.out, f"OK: connected to {self.mock.base_url} as Alex Example\n")
         report = self.cli("doctor", "--json", env=file_env, **bare).json()
-        self.assertEqual({check["name"]: check["status"] for check in report["checks"]}, {
+        statuses = {check["name"]: check["status"] for check in report["checks"]}
+        self.assertIn(statuses.pop("launcher"), ("ok", "warn"))  # whether `conflu` is on the PATH of the machine that runs the tests is no concern of this test
+        self.assertEqual(statuses, {
             "runtime": "ok", "config file": "ok", "base url": "ok", "email": "ok", "token": "ok", "tls": "ok",
-            "connection": "ok", "spaces": "ok", "space": "ok", "privacy": "ok",
+            "connection": "ok", "spaces": "ok", "api": "ok", "space": "ok", "privacy": "ok",
         })
         self.assertTrue(report["ok"])
         self.assertEqual(self.cli("pages", "--limit", "1", "--json", env=file_env, **bare).json()["space"], "ENG")  # the current space

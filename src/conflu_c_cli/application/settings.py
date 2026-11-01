@@ -4,6 +4,7 @@ The definitions are the single source for parsing, `conflu config show` and the 
 """
 from __future__ import annotations
 
+import ipaddress
 import math
 import re
 from dataclasses import dataclass, field
@@ -38,11 +39,19 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
     SettingDef("CONFLUENCE_MAX_TIME", "max_time", "float", 120.0, "Seconds to wait for an answer."),
     SettingDef("CONFLUENCE_RETRY", "retry", "int", 2, "Retries of a read request after a network error or HTTP 429/502/503/504. Writes are never retried."),
     SettingDef("CONFLUENCE_OUTPUT", "output", "str", "text", "`json` makes every command that supports it print JSON, as if --json was given. Meant for scripts and agents.", example="json"),
+    SettingDef("CONFLUENCE_PROFILE", "profile", "str", "", "`agent` is for AI agents: CONFLUENCE_HIDE_USERS=true and CONFLUENCE_OUTPUT=json become the defaults (a value you set yourself still wins), and informational messages stay off standard error.", example="agent"),
 )
+
+PROFILES = ("agent",)
+PROFILE_DEFAULTS = {"agent": {"CONFLUENCE_HIDE_USERS": "true", "CONFLUENCE_OUTPUT": "json"}}  # what a profile sets when the setting itself is not set
 
 _BY_NAME = {definition.name: definition for definition in SETTING_DEFS}
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"", "0", "false", "no", "off"}
+MAX_SECONDS = 86400  # a timeout of more than a day is a mistake; far above it the socket layer fails with an OverflowError
+GATEWAY = "https://api.atlassian.com/ex/confluence/"  # the address that API tokens with scopes use, followed by the cloud id of the site
+_GATEWAY_ADDRESS = re.compile("^" + re.escape(GATEWAY) + r"([^/?#@\s]+?)(?:/wiki)?$", re.IGNORECASE)
+_AUTHORITY = re.compile(r"^((?:[a-z][a-z0-9+.\-]*://)?)([^/?#]*)(.*)$", re.IGNORECASE | re.DOTALL)
 
 
 def setting_definition(name: str) -> SettingDef | None:
@@ -50,14 +59,34 @@ def setting_definition(name: str) -> SettingDef | None:
 
 
 def is_local_host(host: str) -> bool:
-    """An address on this computer: what is sent to it does not leave it."""
-    return host == "localhost" or host == "::1" or host.startswith("127.")
+    """An address on this computer: what is sent to it does not leave it. `localhost` or a loopback address; a name that only
+    starts with `127.` (`127.example.com`) is a name that the network resolves, so it is not."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def host_of(url: str) -> str:
     """The host name of a web address, without credentials, port and brackets."""
     match = re.match(r"^[a-z]+://(?:[^/@]*@)?(\[[^\]]*\]|[^/:?#]*)", url.strip(), re.IGNORECASE)
     return match.group(1).strip("[]").lower() if match else ""
+
+
+def shown_address(url: str) -> str:
+    """The address as it may be printed: a user name and password in it are replaced by `********`. An address that holds an @
+    after the host name (a password with a `/`, `?` or `#` in it) cannot be told apart from its credentials, so it is not shown at all."""
+    match = _AUTHORITY.match(url)
+    if not match:
+        return url
+    scheme, authority, rest = match.groups()
+    if "@" in rest:
+        return "(not shown: it holds an @ after the host name)"
+    if "@" in authority:
+        return f"{scheme}********@{authority.rpartition('@')[2]}{rest}"
+    return url
 
 
 def wiki_root(url: str) -> str:
@@ -69,6 +98,17 @@ def wiki_root(url: str) -> str:
     if re.match(r"^https://api\.atlassian\.com/ex/confluence/[^/?#]+$", text, re.IGNORECASE):
         return text + "/wiki"
     return text
+
+
+def gateway_cloud_id(url: str) -> str:
+    """The cloud id in the address of the Atlassian gateway (`https://api.atlassian.com/ex/confluence/CLOUD_ID`, with or without the
+    `/wiki`), or an empty text when the address is another one."""
+    match = _GATEWAY_ADDRESS.match(url.strip().rstrip("/"))
+    return match.group(1) if match else ""
+
+
+def gateway_address(cloud_id: str) -> str:
+    return GATEWAY + cloud_id
 
 
 def mask_secret(value: str) -> str:
@@ -120,15 +160,23 @@ class Settings:
     max_time: float = 120.0
     retry: int = 2
     output: str = "text"
+    profile: str = ""
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> "Settings":
         parsed = {definition.attr: _parse(definition, values.get(definition.name, "")) for definition in SETTING_DEFS}
+        parsed["profile"] = parsed["profile"].lower()
+        if parsed["profile"] and parsed["profile"] not in PROFILES:
+            raise ConfigError(f"CONFLUENCE_PROFILE must be empty or {' or '.join(PROFILES)}, not '{values.get('CONFLUENCE_PROFILE', '')}'.")
+        for name, value in PROFILE_DEFAULTS.get(parsed["profile"], {}).items():
+            if not str(values.get(name, "")).strip():  # a setting that was set, even to false, is the person's decision
+                definition = setting_definition(name)
+                parsed[definition.attr] = _parse(definition, value)  # type: ignore[union-attr]
         if parsed["output"] not in ("text", "json"):
             raise ConfigError(f"CONFLUENCE_OUTPUT must be text or json, not '{parsed['output']}'.")
         for name, attr in (("CONFLUENCE_CONNECT_TIMEOUT", "connect_timeout"), ("CONFLUENCE_MAX_TIME", "max_time")):
-            if not math.isfinite(parsed[attr]) or parsed[attr] <= 0:
-                raise ConfigError(f"{name} must be a number of seconds greater than 0, not '{values.get(name, '')}'.")
+            if not math.isfinite(parsed[attr]) or not 0 < parsed[attr] <= MAX_SECONDS:
+                raise ConfigError(f"{name} must be a number of seconds greater than 0 and at most {MAX_SECONDS}, not '{values.get(name, '')}'.")
         if parsed["retry"] < 0:
             raise ConfigError(f"CONFLUENCE_RETRY must be 0 or more, not '{values.get('CONFLUENCE_RETRY', '')}'.")
         return cls(**parsed)
@@ -140,3 +188,39 @@ class Settings:
     @property
     def json_by_default(self) -> bool:
         return self.output == "json"
+
+    @property
+    def quiet(self) -> bool:
+        """Informational messages (not warnings or errors) stay off standard error: the agent profile."""
+        return self.profile == "agent"
+
+
+class UnreadableSettings:
+    """Stands in for `Settings` while the configuration cannot be read (a line of the file that does not parse, a value that is refused).
+
+    The application can still be made, so that the commands that mend the configuration run: `config set`, `config unset`, `config path`,
+    `setup-token`, `remove-token` and `clear-space`. Whatever else asks for a setting gets the explanation that every command got before
+    this class existed (the ConfigError), so nothing is guessed: no policy, no address and no token is replaced by a default.
+
+    Three things are answered: that JSON is not the default and that messages are not quiet (what the report of an error asks), and,
+    until `seal` is called, the credentials that a use case copies into a guard while the application is made."""
+
+    _ALWAYS = {"json_by_default": False, "quiet": False}
+    _WHILE_THE_APPLICATION_IS_MADE = {"api_token": "", "email": ""}
+
+    def __init__(self, problem: ConfigError) -> None:
+        self._problem = problem
+        self._sealed = False
+
+    def seal(self) -> None:
+        """The application is made: from now on a setting that is asked for is an error, the credentials too."""
+        self._sealed = True
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)  # copy, pickle and the like ask for these: there is none
+        if name in self._ALWAYS:
+            return self._ALWAYS[name]
+        if not self._sealed and name in self._WHILE_THE_APPLICATION_IS_MADE:
+            return self._WHILE_THE_APPLICATION_IS_MADE[name]
+        raise ConfigError(self._problem.message, hint=self._problem.hint, details=dict(self._problem.details))

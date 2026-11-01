@@ -46,10 +46,10 @@ def normalize_labels(names: list[str]) -> list[str]:
         label = (name or "").strip().lower()
         if not label:
             continue
-        if _BAD_LABEL.search(label) or len(label) > MAX_LABEL:
+        if _BAD_LABEL.search(label) or len(label) > MAX_LABEL or not label.strip("."):
             raise ValidationError(
                 f"Not a valid label: {name!r}",
-                hint="A label has no spaces and none of & ? / : ; ' \" < > ( ) [ ] , @ ^ # $ % * + = \\ { } | ` ~ !",
+                hint="A label has no spaces, is not only dots, and has none of & ? / : ; ' \" < > ( ) [ ] , @ ^ # $ % * + = \\ { } | ` ~ !",
             )
         seen.setdefault(label, None)
     return list(seen)
@@ -68,12 +68,13 @@ def combine_body(current: str, new: str, mode: str) -> str:
 
 @dataclass
 class PageDraft:
-    """A page to create. The body is in storage format already."""
+    """A page to create. The body is in storage format already. `space` and `parent` are None when none was named (the current space, the home page of
+    the space); one that is empty was named and is a mistake, which `CreatePage` refuses."""
 
-    space: str = ""
+    space: str | None = None
     title: str = ""
     body: str = ""
-    parent: str = ""
+    parent: str | None = None
     labels: list[str] = field(default_factory=list)
 
 

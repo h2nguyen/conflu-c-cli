@@ -37,9 +37,11 @@ In scope, for example:
 
 - **Credentials.** The API token or the account e-mail address is printed, logged, accepted as a command line
   argument, kept in an error message, or sent to any address other than the configured one (for instance the
-  media host of a download, or a host named in a `conflu api` path).
+  media host of a download, or a host named in a `conflu api` path), or a `conflu api` path that leaves the wiki
+  root with `..` written in any way.
 - **Personal data.** People (names, account ids, e-mail addresses, personal links) appear although `--with-users`
-  was not given or `CONFLUENCE_HIDE_USERS=true` is set.
+  was not given or `CONFLUENCE_HIDE_USERS=true` is set, also through a search, an export, a printed request, the key of a
+  personal space or an error message.
 - **The terminal.** Text from a page, a title or an error that carries control, escape or C1 characters through to
   the terminal.
 - **Files.** `conflu download` or `conflu export` writes outside the folder that was named, overwrites without
@@ -48,8 +50,10 @@ In scope, for example:
   that survives a conversion.
 - **TLS.** Certificate verification is skipped, or a plain `http://` address is accepted, without the setting that
   allows it.
-- **Limits.** Input that gets past the documented bounds (an answer of 64 MiB once decoded, a file of 512 MiB,
-  deeply nested content, hostile Markdown or search words) and uses up memory or time.
+- **Limits.** Input that gets past the documented bounds (an answer of 64 MiB once decoded, of more than 250,000 JSON
+  objects or of more than 1,000 results in one list, a file of 512 MiB, a text from a file or a pipe of more than 16 MiB,
+  a query of more than 1 MiB, deeply nested content, hostile Markdown, storage format or search words) and uses up
+  memory or time.
 - **The installer.** `install.py` replaces or removes something it did not create.
 
 Out of scope:
@@ -60,6 +64,13 @@ Out of scope:
 - Behaviour that the documentation describes as a choice: `CONFLUENCE_INSECURE=true`,
   `CONFLUENCE_ALLOW_HTTP=true`, `--with-users`, `--force`, and the strict X.509 checks, which are off by default
   (the certificate chain and the host name are always verified).
+- A person's name written out in a sentence of free text (the words of an error of the server, a page text, a comment): a
+  name is no pattern that a redaction can find. E-mail addresses, links to people, account ids and the people that an
+  answer names in a field of its own are what `--with-users` and `CONFLUENCE_HIDE_USERS` govern.
+- A server that sends the status line and the headers of an answer a few bytes at a time, each within
+  `CONFLUENCE_MAX_TIME`: that time is the wait for the next bytes, and for the whole body once it has begun, not for the
+  headers (see [Timeouts and retries](docs/how-to/configure.md#timeouts-and-retries)). Only the server you configured, or
+  something between you and it, can do that; Ctrl+C ends it, and a scheduler's own time limit bounds an unattended run.
 - Instructions in a page that an AI agent decides to follow. The
   [guide for agents](docs/how-to/use-with-ai-agents.md) tells them to treat Confluence text as data, but what an
   agent does is outside the control of this program.

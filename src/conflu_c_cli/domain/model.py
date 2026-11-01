@@ -105,6 +105,7 @@ class Page:
     space_id: str = ""
     space_key: str = ""
     parent_id: str = ""
+    parent_type: str = ""  # page, whiteboard, database, embed or folder; empty when the page has no parent
     position: int | None = None
     created: str = ""
     version: VersionInfo | None = None
@@ -115,6 +116,7 @@ class Page:
     url: str = ""
     ancestors: list[PageRef] = field(default_factory=list)
     comments: list[Comment] = field(default_factory=list)
+    labels_incomplete: bool = field(default=False, compare=False, metadata={"json": False})  # more than 50 labels, and the call that lists the rest failed
     raw: dict[str, Any] | None = field(default=None, repr=False, compare=False, metadata={"json": False})
 
     @property
@@ -151,6 +153,8 @@ class Attachment:
     page_id: str = ""
     download_link: str = ""  # relative to the wiki root
     comment: str = ""
+    blog_post_id: str = ""  # the blog post that holds the file, when it is not on a page
+    updated: str = ""  # when the current version was saved; `created` is when the file was first attached
 
 
 @dataclass(frozen=True)

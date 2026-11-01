@@ -30,8 +30,10 @@ What to look at:
 - `--comments` adds the footer comments; `conflu comments 123456 --inline` adds inline comments too.
 - `--ancestors` prints the path so you can see where the page lives.
 - `conflu versions` gives you the version numbers that `conflu update --if-version N` can guard on.
-- `--body-only` prints the body and nothing else, so it can go into a file: `conflu page 123456 --format storage --with-users --body-only > page.xml`
-  keeps the page exactly as Confluence stores it, ready for `conflu update 123456 --file page.xml --format storage --dry-run`.
+- `--body-only` prints the body and nothing else, and with `--out FILE` the program writes it into a file itself, as UTF-8:
+  `conflu page 123456 --format storage --with-users --body-only --out page.xml` keeps the page exactly as Confluence stores it, ready for
+  `conflu update 123456 --file page.xml --format storage --dry-run`. Do not save it with `>`: Windows PowerShell 5.1 re-encodes what `>` writes and damages every character that is
+  not ASCII (see [troubleshooting](troubleshooting.md#saving-output-with--in-windows-powershell-51)). `--out` does not replace a file that is there without `--force`.
 
 If `conflu page` mentions `dropped`, the page holds constructs that Markdown cannot express in its reading copy.
 That list can include macros, mentions and `redacted-text` when the Markdown view had to hide e-mail addresses or
@@ -87,6 +89,35 @@ Rules of thumb:
 - Use `--if-unchanged-since` when you read the page earlier and kept the timestamp.
 - Exit code 3 means the page changed before your write reached Confluence; read it again.
 
+## Check before you write, and undo an edit
+
+```bash
+conflu permissions 123456 --only update          # may my account change this page at all?
+conflu restrictions 123456                       # is it restricted, and how many users and groups hold read and update?
+conflu versions 123456                           # the saved versions
+conflu diff 123456 --from 6 --to 7               # what the last edit changed, as a unified diff of the Markdown
+conflu restore 123456 --version 6 --dry-run      # bring version 6 back as a new version, nothing is lost
+conflu restore 123456 --version 6 --if-version 7
+```
+
+`conflu permissions`, `conflu restrictions` and `conflu space-access` only read: nothing here changes who may see
+or edit content. A restore saves the old content as the next version, so the edit you undo stays in the history
+([history and restore](history-and-restore.md), [access and restrictions](access-and-restrictions.md)).
+
+## Folders and blog posts
+
+```bash
+conflu folder 7001 --children                    # what sits directly below a folder (its id is in the address in the browser)
+conflu create --space ENG --title 'Guides' --parent 7001 --file guide.md --dry-run
+conflu move 123456 --to 7001 --dry-run           # a page into a folder: it saves a new version
+conflu blogposts --space ENG                     # the blog posts of a space
+conflu blogpost 7101 --outline
+```
+
+A page, a folder, a whiteboard, a database and a smart link share one tree and one sequence of ids, so an id alone
+does not say which it is; `conflu folder`, `conflu whiteboard`, `conflu database` and `conflu smartlink` show the
+others ([folders and structure](folders-and-structure.md), [blog posts](blog-posts.md)).
+
 ## Work around one page
 
 ```bash
@@ -99,6 +130,19 @@ conflu move 123456 --to 654321 --position before --dry-run
 
 `conflu label`, `conflu comment`, `conflu attach` and `conflu move` all have the same safe pattern: preview,
 run, then read back with `conflu page`, `conflu comments` or `conflu attachments`.
+
+## Review the discussion on a page
+
+```bash
+conflu comments 123456 --inline --resolution open       # what is still open
+conflu comments 123456 --since 2d --last 5              # what was said lately
+conflu comment 123456 --text 'Done, see version 8.' --reply-to 4001 --dry-run
+conflu comment 123456 --edit 4005 --text 'A better wording.' --dry-run     # your own comment; the dry run shows a diff
+conflu comment 123456 --resolve 4003 --dry-run                              # close an inline discussion
+```
+
+Comments carry `authorRef`, a stable pseudonym of the author, and `byMe`, so the discussion can be followed without a single name
+([comments and labels](comments-and-labels.md)).
 
 ## Publish Markdown from files
 

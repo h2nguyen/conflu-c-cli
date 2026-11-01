@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from conflu_c_cli.adapters.driving.cli.main import run
 from conflu_c_cli.application.app import Application
-from conflu_c_cli.application.ports import Diagnostics, Docs
+from conflu_c_cli.application.ports import Cache, Diagnostics, Docs
 from conflu_c_cli.application.settings import Settings
 
 from .fakes import FakeGateway, MemoryConfigStore, MemoryFiles, build_app
@@ -40,18 +40,27 @@ def run_cli(
     store: MemoryConfigStore | None = None,
     settings: Settings | None = None,
     docs: Docs | None = None,
-    stdin: str = "",
+    stdin: str | bytes = "",
     stdin_tty: bool = False,
     environ: Mapping[str, str] | None = None,
+    cache: Cache | None = None,
+    runtime: Mapping[str, str] | None = None,
 ) -> Result:
     out, err = io.StringIO(), io.StringIO()
     built: list[Application] = []
 
     def factory(diagnostics: Diagnostics) -> Application:
-        app = build_app(gateway=gateway, files=files, store=store, settings=settings, docs=docs, diagnostics=diagnostics, environ=environ)
+        app = build_app(
+            gateway=gateway, files=files, store=store, settings=settings, docs=docs, diagnostics=diagnostics, environ=environ, cache=cache, runtime=runtime
+        )
         built.append(app)
         return app
 
-    source = _Tty(stdin) if stdin_tty else io.StringIO(stdin)
+    if stdin_tty:
+        source: io.TextIOBase = _Tty(stdin.decode("utf-8") if isinstance(stdin, bytes) else stdin)
+    elif isinstance(stdin, bytes):
+        source = io.TextIOWrapper(io.BytesIO(stdin), encoding="utf-8")  # like the real standard input: it has a binary `buffer`
+    else:
+        source = io.StringIO(stdin)
     code = run(list(argv), app_factory=factory, environ=environ or {}, stdout=out, stderr=err, stdin=source)
     return Result(code, out.getvalue(), err.getvalue(), built[0] if built else None)

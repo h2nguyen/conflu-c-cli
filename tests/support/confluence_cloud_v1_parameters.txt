@@ -1,0 +1,140 @@
+# The query parameters, the headers and the request body that the Confluence Cloud REST API v1 document gives each of its operations, one operation per line.
+# Derived from https://dac-static.atlassian.com/cloud/confluence/swagger.v3.json (info.version 1.0.0, read on 2026-10-30): 130 operations, those of confluence_cloud_v1_endpoints.txt.
+# The document writes the paths with the /wiki prefix; it is left off here, so every path starts with /rest/. Guide: https://developer.atlassian.com/cloud/confluence/rest/v1/intro/
+# A line is `METHOD path | QUERY | BODY`, or `METHOD path | QUERY | header: HEADERS | BODY` when the document names a header parameter. The method and the path template are
+# those of the endpoint list of this API, in the same order. Only top-level names are listed, each part sorted by name.
+# QUERY is `no query`, or `query: ` and the parameters: `*` after a name marks a required one, `<=N` the documented maximum of `limit`, `(deprecated)` one that the document marks as deprecated.
+# BODY is `no body`; `body: ` and what a JSON body may be; or `not JSON (media type: form fields)` for a request that is not JSON, such as a multipart upload. `optional ` in front says that a request may have none.
+# A JSON body is `{properties}` for an object (`*` marks a required property, `...` that other properties are accepted as well), `[]` for an array or `any` for anything; the alternatives of a oneOf are joined by ` or `.
+# tests/support/conformance.py reads this file. When `strict_parameters` is on (the sweep of the commands turns it on) the mock Confluence answers HTTP 400 to a request that does not fit its line and
+# records it, so that the CLI cannot come to send a parameter or a body that the document does not know. Keep the file as the document has it: it is the reference, not what the CLI uses.
+GET /rest/api/analytics/content/{contentId}/viewers | query: fromDate | no body
+GET /rest/api/analytics/content/{contentId}/views | query: fromDate | no body
+GET /rest/api/audit | query: endDate, limit, searchString, start, startDate | no body
+POST /rest/api/audit | no query | body: {affectedObject, associatedObjects, author, category, changedValues, creationDate, description, remoteAddress*, summary, sysAdmin}
+GET /rest/api/audit/export | query: endDate, format, searchString, startDate | no body
+GET /rest/api/audit/retention | no query | no body
+PUT /rest/api/audit/retention | no query | body: {number*, units*}
+GET /rest/api/audit/since | query: limit, number, searchString, start, units | no body
+GET /rest/api/content-states | no query | no body
+POST /rest/api/content/archive | no query | optional body: {pages}
+POST /rest/api/content/blueprint/instance/{draftId} | query: expand, status | body: {ancestors, space, status, title*, type*, version*, ...}
+PUT /rest/api/content/blueprint/instance/{draftId} | query: expand, status | body: {ancestors, space, status, title*, type*, version*, ...}
+GET /rest/api/content/search | query: cql*, cqlcontext, cursor, expand, limit | no body
+POST /rest/api/content/{id}/child/attachment | query: status | not JSON (multipart/form-data: comment, file*, minorEdit*)
+PUT /rest/api/content/{id}/child/attachment | query: status | not JSON (multipart/form-data: comment, file*, minorEdit*)
+PUT /rest/api/content/{id}/child/attachment/{attachmentId} | no query | body: {container, extensions, id*, metadata, status, title, type*, version*, ...}
+POST /rest/api/content/{id}/child/attachment/{attachmentId}/data | no query | not JSON (multipart/form-data: comment, file*, minorEdit*)
+GET /rest/api/content/{id}/child/attachment/{attachmentId}/download | query: status, version | no body
+POST /rest/api/content/{id}/copy | query: expand | body: {body, copyAttachments, copyCustomContents, copyLabels, copyPermissions, copyProperties, destination*, pageTitle}
+GET /rest/api/content/{id}/descendant | query: expand | no body
+GET /rest/api/content/{id}/descendant/{type} | query: depth, expand, limit, start | no body
+GET /rest/api/content/{id}/history/{version}/macro/id/{macroId} | no query | no body
+GET /rest/api/content/{id}/history/{version}/macro/id/{macroId}/convert/async/{to} | query: allowCache, embeddedContentRender, expand, spaceKeyContext | no body
+GET /rest/api/content/{id}/history/{version}/macro/id/{macroId}/convert/{to} | query: embeddedContentRender, expand, spaceKeyContext | no body
+DELETE /rest/api/content/{id}/label | query: name* | no body
+POST /rest/api/content/{id}/label | no query | body: [] or {name*, prefix*, ...}
+DELETE /rest/api/content/{id}/label/{label} | no query | no body
+GET /rest/api/content/{id}/notification/child-created | query: limit, start | no body
+GET /rest/api/content/{id}/notification/created | query: limit, start | no body
+DELETE /rest/api/content/{id}/pageTree | no query | no body
+POST /rest/api/content/{id}/pagehierarchy/copy | no query | body: {copyAttachments, copyCustomContents, copyDescendants, copyLabels, copyPermissions, copyProperties, destinationPageId*, titleOptions}
+POST /rest/api/content/{id}/permission/check | no query | body: {operation*, subject*}
+DELETE /rest/api/content/{id}/restriction | query: expand | no body
+GET /rest/api/content/{id}/restriction | query: expand, limit, start | no body
+POST /rest/api/content/{id}/restriction | query: expand | body: {results*} or []
+PUT /rest/api/content/{id}/restriction | query: expand | body: {results*} or []
+GET /rest/api/content/{id}/restriction/byOperation | query: expand | no body
+GET /rest/api/content/{id}/restriction/byOperation/{operationKey} | query: expand, limit, start | no body
+DELETE /rest/api/content/{id}/restriction/byOperation/{operationKey}/byGroupId/{groupId} | no query | no body
+GET /rest/api/content/{id}/restriction/byOperation/{operationKey}/byGroupId/{groupId} | no query | no body
+PUT /rest/api/content/{id}/restriction/byOperation/{operationKey}/byGroupId/{groupId} | no query | no body
+DELETE /rest/api/content/{id}/restriction/byOperation/{operationKey}/user | query: accountId, key (deprecated), username (deprecated) | no body
+GET /rest/api/content/{id}/restriction/byOperation/{operationKey}/user | query: accountId, key (deprecated), username (deprecated) | no body
+PUT /rest/api/content/{id}/restriction/byOperation/{operationKey}/user | query: accountId, key (deprecated), username (deprecated) | no body
+DELETE /rest/api/content/{id}/state | query: status | no body
+GET /rest/api/content/{id}/state | query: status | no body
+PUT /rest/api/content/{id}/state | query: status* | body: {color, id, name}
+GET /rest/api/content/{id}/state/available | no query | no body
+POST /rest/api/content/{id}/version | query: expand | body: {operationKey*, params*}
+DELETE /rest/api/content/{id}/version/{versionNumber} | no query | no body
+PUT /rest/api/content/{pageId}/move/{position}/{targetId} | no query | no body
+GET /rest/api/contentbody/convert/async/bulk/tasks | query: ids* | no body
+POST /rest/api/contentbody/convert/async/bulk/tasks | no query | body: {conversionInputs}
+GET /rest/api/contentbody/convert/async/{id} | no query | no body
+POST /rest/api/contentbody/convert/async/{to} | query: allowCache, contentIdContext, embeddedContentRender, expand, spaceKeyContext | body: {representation*, value*, ...}
+GET /rest/api/group | query: accessType, limit, start | no body
+POST /rest/api/group | no query | body: {name*}
+DELETE /rest/api/group/by-id | query: id* | no body
+GET /rest/api/group/by-id | query: id* | no body
+GET /rest/api/group/picker | query: limit, query*, shouldReturnTotalSize, start | no body
+DELETE /rest/api/group/userByGroupId | query: accountId*, groupId*, key (deprecated), username (deprecated) | no body
+POST /rest/api/group/userByGroupId | query: groupId* | body: {accountId*}
+GET /rest/api/group/{groupId}/membersByGroupId | query: expand, limit, shouldReturnTotalSize, start | no body
+GET /rest/api/label | query: limit, name*, start, type | no body
+GET /rest/api/longtask | query: key, limit, start | no body
+GET /rest/api/longtask/{id} | no query | no body
+GET /rest/api/relation/{relationName}/from/{sourceType}/{sourceKey}/to/{targetType} | query: expand, limit, sourceStatus, sourceVersion, start, targetStatus, targetVersion | no body
+DELETE /rest/api/relation/{relationName}/from/{sourceType}/{sourceKey}/to/{targetType}/{targetKey} | query: sourceStatus, sourceVersion, targetStatus, targetVersion | no body
+GET /rest/api/relation/{relationName}/from/{sourceType}/{sourceKey}/to/{targetType}/{targetKey} | query: expand, sourceStatus, sourceVersion, targetStatus, targetVersion | no body
+PUT /rest/api/relation/{relationName}/from/{sourceType}/{sourceKey}/to/{targetType}/{targetKey} | query: sourceStatus, sourceVersion, targetStatus, targetVersion | no body
+GET /rest/api/relation/{relationName}/to/{targetType}/{targetKey}/from/{sourceType} | query: expand, limit, sourceStatus, sourceVersion, start, targetStatus, targetVersion | no body
+GET /rest/api/search | query: _, cql*, cqlcontext, cursor, excerpt, excludeCurrentSpaces, expand, includeArchivedSpaces, limit, next, prev, sitePermissionTypeFilter, start | no body
+GET /rest/api/search/user | query: cql*, expand, limit, sitePermissionTypeFilter, start | no body
+GET /rest/api/settings/lookandfeel | query: spaceKey | no body
+PUT /rest/api/settings/lookandfeel | no query | body: {lookAndFeelType*, spaceKey*}
+DELETE /rest/api/settings/lookandfeel/custom | query: spaceKey | no body
+POST /rest/api/settings/lookandfeel/custom | query: spaceKey | body: {bordersAndDividers*, content*, header*, headings*, horizontalHeader, links*, menus*, spaceReference}
+GET /rest/api/settings/systemInfo | no query | no body
+GET /rest/api/settings/theme | query: limit, start | no body
+GET /rest/api/settings/theme/selected | no query | no body
+GET /rest/api/settings/theme/{themeKey} | no query | no body
+POST /rest/api/space | no query | body: {alias, description, key, name*, permissions, ...}
+POST /rest/api/space/_private | no query | body: {alias, description, key, name*, permissions, ...}
+DELETE /rest/api/space/{spaceKey} | no query | no body
+PUT /rest/api/space/{spaceKey} | no query | body: {description, homepage, name, status, type, ...}
+DELETE /rest/api/space/{spaceKey}/label | query: name*, prefix | no body
+GET /rest/api/space/{spaceKey}/label | query: limit, prefix, start | no body
+POST /rest/api/space/{spaceKey}/label | no query | body: []
+POST /rest/api/space/{spaceKey}/permission | no query | body: {_links, operation*, subject*, ...}
+POST /rest/api/space/{spaceKey}/permission/custom-content | no query | body: {operations*, subject*}
+DELETE /rest/api/space/{spaceKey}/permission/{id} | no query | no body
+GET /rest/api/space/{spaceKey}/settings | no query | no body
+PUT /rest/api/space/{spaceKey}/settings | no query | body: {contentMode, routeOverrideEnabled}
+GET /rest/api/space/{spaceKey}/state | no query | no body
+GET /rest/api/space/{spaceKey}/state/content | query: expand, limit<=100, start, state-id* | no body
+GET /rest/api/space/{spaceKey}/state/settings | no query | no body
+DELETE /rest/api/space/{spaceKey}/theme | no query | no body
+GET /rest/api/space/{spaceKey}/theme | no query | no body
+PUT /rest/api/space/{spaceKey}/theme | no query | body: {themeKey*}
+GET /rest/api/space/{spaceKey}/watch | query: limit, start | no body
+POST /rest/api/template | no query | body: {body*, description, labels, name*, space, templateType*, ...}
+PUT /rest/api/template | no query | body: {body*, description, labels, name*, space, templateId*, templateType*, ...}
+GET /rest/api/template/blueprint | query: expand, limit, spaceKey, start | no body
+GET /rest/api/template/page | query: expand, limit, spaceKey, start | no body
+DELETE /rest/api/template/{contentTemplateId} | no query | no body
+GET /rest/api/template/{contentTemplateId} | query: expand | no body
+GET /rest/api/user | query: accountId*, expand | no body
+GET /rest/api/user/anonymous | query: expand | no body
+GET /rest/api/user/bulk | query: accountId*, expand | no body
+GET /rest/api/user/current | query: expand | no body
+GET /rest/api/user/email | query: accountId* | no body
+GET /rest/api/user/email/bulk | query: accountId* | no body
+GET /rest/api/user/memberof | query: accountId*, limit, start | no body
+DELETE /rest/api/user/watch/content/{contentId} | query: accountId, key (deprecated), username (deprecated) | header: X-Atlassian-Token* | no body
+GET /rest/api/user/watch/content/{contentId} | query: accountId, key (deprecated), username (deprecated) | no body
+POST /rest/api/user/watch/content/{contentId} | query: accountId, key (deprecated), username (deprecated) | no body
+DELETE /rest/api/user/watch/label/{labelName} | query: accountId, key (deprecated), username (deprecated) | no body
+GET /rest/api/user/watch/label/{labelName} | query: accountId, key (deprecated), username (deprecated) | no body
+POST /rest/api/user/watch/label/{labelName} | query: accountId, key (deprecated), username (deprecated) | header: X-Atlassian-Token* | no body
+DELETE /rest/api/user/watch/space/{spaceKey} | query: accountId, key (deprecated), username (deprecated) | no body
+GET /rest/api/user/watch/space/{spaceKey} | query: accountId, key (deprecated), username (deprecated) | no body
+POST /rest/api/user/watch/space/{spaceKey} | query: accountId, key (deprecated), username (deprecated) | header: X-Atlassian-Token* | no body
+GET /rest/api/user/{userId}/property | query: limit<=25, start | no body
+DELETE /rest/api/user/{userId}/property/{key} | no query | no body
+GET /rest/api/user/{userId}/property/{key} | no query | no body
+POST /rest/api/user/{userId}/property/{key} | no query | body: {value*}
+PUT /rest/api/user/{userId}/property/{key} | no query | body: {value*}
+DELETE /rest/atlassian-connect/1/app/module/dynamic | query: moduleKey* | no body
+GET /rest/atlassian-connect/1/app/module/dynamic | no query | no body
+POST /rest/atlassian-connect/1/app/module/dynamic | no query | not JSON (*/*: modules*)

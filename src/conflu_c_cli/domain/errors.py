@@ -7,6 +7,7 @@ from typing import Any
 class ConfluCliError(Exception):
     exit_code = 1
     code = "ERROR"
+    report_as_json: bool | None = None  # set by the command line when it knows whether the settings (CONFLUENCE_OUTPUT, the agent profile) ask for JSON; None: not known
 
     def __init__(self, message: str, *, hint: str = "", details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
@@ -26,6 +27,11 @@ class ConfigError(ConfluCliError):
 
 class ValidationError(ConfluCliError):
     code = "INVALID"
+
+
+class UnreadableDocument(ValidationError):
+    """The file is no Office Open XML document that can be read safely; the message says why. It lives here (and is re-exported by `domain/ooxml.py`)
+    so that a module that only catches it need not import the reader, which brings `zipfile` and `xml.etree` with it."""
 
 
 class ConflictError(ConfluCliError):
@@ -62,5 +68,5 @@ EXIT_CODES: tuple[tuple[int, str, str], ...] = (
     (4, "NOT_FOUND", "Confluence has no such page, space or resource (HTTP 404)."),
     (5, "AUTH", "Confluence refused the credentials or the permission (HTTP 401 or 403)."),
     (6, "REJECTED", "Confluence understood the request and refused it (for example HTTP 400); its message is shown."),
-    (7, "UNAVAILABLE", "Confluence cannot be reached or answered with a server error (network, timeout, HTTP 5xx)."),
+    (7, "UNAVAILABLE", "Confluence cannot be reached or answered with a server error (network, timeout, HTTP 5xx, HTTP 429 after the retries)."),
 )

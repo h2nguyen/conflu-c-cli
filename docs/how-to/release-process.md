@@ -21,8 +21,14 @@ semantic versioning: `MAJOR.MINOR.PATCH`.
 4. **Close the changelog entry**: rename `## [Unreleased]` content into a new heading
    `## [x.y.z] - YYYY-MM-DD` above the older entries, and leave an empty `## [Unreleased]` section on top.
 5. **Regenerate the documentation**: `python scripts/generate_docs.py` (the command reference and the command table
-   in the README embed the version and the command descriptions).
-6. **Run the checks**:
+   in the README embed the version and the command descriptions), and, when a command was added or made a different call,
+   the table "Which API each command uses" of the [compatibility page](../reference/compatibility.md)
+   (`python -m tests.support.sweep_runner` prints the rows).
+6. **Check the API documents.** Confluence Cloud changes in place: download the two OpenAPI documents again (their addresses are on the
+   compatibility page), run `python scripts/update_endpoint_lists.py --v2 FILE --v1 FILE --read-on YYYY-MM-DD --dry-run`, and read what it
+   says. If something was added, removed or deprecated, run it without `--dry-run` and follow the compatibility page ("Keeping the lists
+   current"). A release states in its changelog which documents it was checked against (the day is in `src/conflu_c_cli/domain/compat.py`).
+7. **Run the checks**:
 
    ```bash
    python -m unittest discover -s tests -t .
@@ -33,9 +39,9 @@ semantic versioning: `MAJOR.MINOR.PATCH`.
    version or is out of order, when a generated file is out of date, when the skill does not mention a command,
    when a link in the documentation leads nowhere, and when a community file (license, contributing guide, code
    of conduct, security policy, pull request template, issue forms) is missing.
-7. **Install and try it**: `python install.py --dry-run`, then `python install.py`, then `conflu version` and
+8. **Install and try it**: `python install.py --dry-run`, then `python install.py`, then `conflu version` and
    `conflu doctor`.
-8. **Merge, tag and publish.** Merge the pull request into `main` once the checks of the CI workflow pass. Then
+9. **Merge, tag and publish.** Merge the pull request into `main` once the checks of the CI workflow pass. Then
    tag the merge commit with `v` and the version, push the tag, and create a GitHub release from that tag with
    the new changelog entry as its notes:
 
@@ -59,4 +65,5 @@ the installed copies, so a release is complete only when those files are current
 - Name the commands and settings in backticks and give the exit code or JSON key when it matters.
 - Do not describe the implementation unless it changes what a user sees (requirements, speed, safety).
 - Be honest about test scope: say what was verified against the mock server, what against a real Confluence
-  Cloud site, and that `conflu doctor` is the check against the reader's own site.
+  Cloud site, and that `conflu doctor` is the check against the reader's own site. Say which day's OpenAPI
+  documents of Confluence Cloud the release was checked against (`docs/reference/compatibility.md`).

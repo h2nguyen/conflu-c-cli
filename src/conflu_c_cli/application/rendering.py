@@ -7,9 +7,8 @@ from ..domain.errors import UsageError, ValidationError
 from ..domain.markdown import markdown_to_storage
 from ..domain.privacy import has_blanked_mentions, redact_storage, redact_text
 from ..domain.storage import storage_to_markdown, storage_to_text
+from .formats import BODY_FORMATS, INPUT_FORMATS
 
-BODY_FORMATS = ("markdown", "text", "storage")
-INPUT_FORMATS = ("markdown", "storage")
 REDACTED = "redacted-text"  # e-mail addresses and personal links that are hidden from the Markdown
 
 
@@ -63,7 +62,7 @@ def storage_from_input(text: str, fmt: str) -> str:
         return markdown_to_storage(text)
     if has_blanked_mentions(text):
         raise ValidationError(
-            "The storage format has mentions whose account ids were hidden, so it would break them.",
+            "The storage format has mentions whose account ids were hidden, or links into a personal space whose key was hidden, so it would break them.",
             hint="It was read without --with-users. Read the page again with --with-users before you edit and write it back.",
         )
     return text.strip()

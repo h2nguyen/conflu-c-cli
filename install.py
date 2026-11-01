@@ -10,7 +10,7 @@ elsewhere) and writes the launchers `conflu` (Git Bash, Linux, macOS) and `confl
 ~/bin. `~` is HOME in Git Bash; PowerShell and cmd have no HOME, so the home drive and path of Windows is
 used, then the profile, the same way as the program itself finds its configuration. The launchers start the
 Python that ran this script, so run it with the Python you want to use. The configuration
-(~/.config/conflu-c-cli) is never touched unless you ask with --purge.
+(~/.config/conflu-c-cli) and the cache (~/.cache/conflu-c-cli) are never touched unless you ask with --purge.
 
 The installer only replaces or removes what it recognises as its own: an installation folder of this
 program and launchers it wrote. Anything else is left alone.
@@ -29,6 +29,7 @@ from pathlib import Path
 
 APP = "conflu-c-cli"
 COMMAND = "conflu"
+SIBLING = "jira"  # the launcher of the sibling CLI: both belong side by side in one folder of the PATH
 PACKAGE = "conflu_c_cli"
 MINIMUM_PYTHON = (3, 10)
 SOURCE = Path(os.path.abspath(__file__)).parent
@@ -155,6 +156,27 @@ def points_to(launcher: Path, install_dir: Path) -> bool:
 def on_path(directory: Path) -> bool:
     wanted = os.path.normcase(os.path.normpath(str(directory)))
     return any(os.path.normcase(os.path.normpath(entry)) == wanted for entry in os.environ.get("PATH", "").split(os.pathsep) if entry)
+
+
+def sibling_launcher_folder() -> Path | None:
+    """A folder on the PATH that holds the launcher of the sibling CLI (`jira`) and that this user can really write to (a file is created in
+    it and removed again: on Windows `os.access` says yes to every folder). The launchers of the two CLIs belong side by side, and a folder
+    that a shell already searches for one is searched for the other."""
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        folder = Path(entry) if entry else None
+        if folder and any((folder / name).is_file() for name in (SIBLING, f"{SIBLING}.cmd")) and can_write(folder):
+            return absolute(folder)
+    return None
+
+
+def can_write(folder: Path) -> bool:
+    import tempfile  # only the note at the end of an installation needs it
+
+    try:
+        with tempfile.TemporaryFile(dir=str(folder)):
+            return True
+    except OSError:
+        return False
 
 
 def windows_path_folder() -> Path | None:
@@ -330,10 +352,16 @@ def install(args: argparse.Namespace) -> int:
         say("  Call the launcher by its full path, or put the folder on your PATH:")
         say('  Git Bash:   echo \'export PATH="$HOME/bin:$PATH"\' >> ~/.bashrc')
         say("  PowerShell: add the folder under Settings > System > About > Advanced system settings > Environment Variables")
-        shared = windows_path_folder()
-        if shared and shared != bin_dir:
-            say("  Or install the launchers into a folder that every Windows shell searches already:")
-            say(f'    python install.py --bin-dir "{shared}"')
+        shared_folders = [
+            (sibling_launcher_folder(), f"the folder that holds the launcher of {SIBLING}"),
+            (windows_path_folder(), "a folder that every Windows shell searches already"),
+        ]
+        shown: list[Path] = []
+        for folder, why in shared_folders:
+            if folder and folder != bin_dir and folder not in shown:
+                shown.append(folder)
+                say(f"  Or install the launchers into {why}:")
+                say(f'    python install.py --bin-dir "{folder}"')
     say(f"Next: `{COMMAND} config set CONFLUENCE_BASE_URL https://example.atlassian.net/wiki`, `{COMMAND} config set CONFLUENCE_EMAIL you@example.com`,")
     say(f"      `{COMMAND} setup-token`, then `{COMMAND} doctor`.")
     return 0
@@ -342,19 +370,26 @@ def install(args: argparse.Namespace) -> int:
 def purge_targets() -> tuple[list[Path], list[Path]]:
     """What `--purge` removes: the files, and the folders to try afterwards.
 
-    The file is the configuration file of this program, in every place it looks (see `home_directories`). The folders
-    are the standard ones named `conflu-c-cli` that nothing else lives in once that file is gone; they are removed
-    with `rmdir`, so a file that appears meanwhile keeps its folder. The folder of a `CONFLUENCE_CONFIG_FILE` kept
-    elsewhere is never touched, whatever it is called."""
+    The files are the configuration file and the cache files (`*.json`: what `conflu doctor --cached` remembers) of this program, in every
+    place it looks (see `home_directories`). The folders are the standard ones named `conflu-c-cli` that nothing else lives in once those
+    files are gone; they are removed with `rmdir`, so a file that appears meanwhile keeps its folder. The folder of a
+    `CONFLUENCE_CONFIG_FILE` kept elsewhere is never touched, whatever it is called."""
+    homes = home_directories()
     explicit = os.environ.get("CONFLUENCE_CONFIG_FILE")
     if explicit:
         config_files, config_folders = [Path(explicit)], []
     else:
         config_files = [Path(os.environ["XDG_CONFIG_HOME"]) / APP / "config"] if os.environ.get("XDG_CONFIG_HOME") else []
-        config_files += [home / ".config" / APP / "config" for home in home_directories()]
+        config_files += [home / ".config" / APP / "config" for home in homes]
         config_folders = [path.parent for path in config_files]
+    cache_folders = [Path(os.environ["XDG_CACHE_HOME"]) / APP] if os.environ.get("XDG_CACHE_HOME") else []
+    cache_folders += [home / ".cache" / APP for home in homes]
+
     files = list(dict.fromkeys(path for path in config_files if path.is_file()))
-    candidates = dict.fromkeys(folder for folder in config_folders if folder.name == APP and folder.is_dir())
+    for folder in cache_folders:
+        if folder.name == APP and folder.is_dir():
+            files += [entry for entry in sorted(folder.iterdir()) if entry.is_file() and entry.suffix == ".json" and entry not in files]
+    candidates = dict.fromkeys(folder for folder in (*config_folders, *cache_folders) if folder.name == APP and folder.is_dir())
     return files, [folder for folder in candidates if all(entry in files for entry in folder.iterdir())]
 
 
@@ -392,7 +427,7 @@ def uninstall(args: argparse.Namespace) -> int:
             except OSError:
                 pass  # something arrived in it meanwhile: it stays
     if not args.purge:
-        say("The configuration was kept. Add --purge to delete it, with the token.")
+        say("The configuration was kept. Add --purge to delete it, with the token and the cache.")
     return 0
 
 
@@ -404,7 +439,7 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="show what would happen and change nothing")
     parser.add_argument("--force", action="store_true", help="replace a launcher that is not from this program, and move a foreign folder aside")
     parser.add_argument("--uninstall", action="store_true", help="remove the program and its launchers")
-    parser.add_argument("--purge", action="store_true", help="with --uninstall: also delete the configuration, which holds the token")
+    parser.add_argument("--purge", action="store_true", help="with --uninstall: also delete the configuration, which holds the token, and the cache")
     return parser.parse_args(argv)
 
 

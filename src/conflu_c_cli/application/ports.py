@@ -2,12 +2,14 @@
 
 The use cases depend on these interfaces only. Adapters implement them (Confluence over HTTP, a config
 file, the file system) and tests replace them with fakes.
+
+This module is the gateway to Confluence, which needs the models of every feature area. The ports to this computer (the settings file, the
+cache, files, the clock, messages, documentation) are in `ports_local.py` and are named here again, so that `from .ports import Files` works as before;
+what needs none of Confluence's models imports them from there and starts without loading them.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Sequence
 
 from ..domain.model import (
@@ -23,11 +25,45 @@ from ..domain.model import (
     User,
     VersionInfo,
 )
+from .ports_access import AccessPort
+from .ports_attachments import AttachmentsPort
+from .ports_blogposts import BlogpostsPort
+from .ports_comments import CommentsPort
+from .ports_history import HistoryPort
+from .ports_labels import LabelsPort
+from .ports_local import Cache, Clock, ConfigStore, Diagnostics, DocTopic, Docs, Files
+from .ports_properties import PropertiesPort
+from .ports_setup import SetupPort
+from .ports_structure import StructurePort
+from .ports_tasks import TasksPort
+from .ports_templates import TemplatesPort
+from .ports_users import UsersPort
+from .ports_watches import WatchesPort
+
+__all__ = ["Cache", "Clock", "ConfigStore", "ConfluenceGateway", "Diagnostics", "DocTopic", "Docs", "Files"]
 
 
-class ConfluenceGateway(ABC):
+class ConfluenceGateway(
+    StructurePort,
+    BlogpostsPort,
+    HistoryPort,
+    CommentsPort,
+    LabelsPort,
+    AttachmentsPort,
+    AccessPort,
+    WatchesPort,
+    UsersPort,
+    TasksPort,
+    PropertiesPort,
+    TemplatesPort,
+    SetupPort,
+    ABC,
+):
     """Everything the CLI asks of Confluence. Lists that are read with a cursor return a `Chunk`; the use cases
-    ask for the next one with `chunk.cursor`, so the gateway never loops."""
+    ask for the next one with `chunk.cursor`, so the gateway never loops.
+
+    The operations of a feature area are declared in `ports_<area>.py` and implemented by the mixin `rest_<area>.py`; the operations
+    below are the ones that were there from the start: people, spaces, pages, comments, labels, attachments, search and raw calls."""
 
     @abstractmethod
     def current_user(self) -> User: ...
@@ -132,100 +168,3 @@ class ConfluenceGateway(ABC):
     @abstractmethod
     def request(self, method: str, path: str, body: Any = None) -> Any:
         """A raw call below the wiki root, for example `api/v2/pages/123` or `rest/api/search?cql=...`."""
-
-
-class ConfigStore(ABC):
-    """Persistent settings: `KEY=value` pairs."""
-
-    @property
-    @abstractmethod
-    def path(self) -> str: ...
-
-    @abstractmethod
-    def load(self) -> dict[str, str]: ...
-
-    @abstractmethod
-    def set(self, key: str, value: str) -> None: ...
-
-    @abstractmethod
-    def unset(self, key: str) -> bool:
-        """True when the key was there."""
-
-
-class Files(ABC):
-    @abstractmethod
-    def read_text(self, path: str, encoding: str = "utf-8") -> str: ...
-
-    @abstractmethod
-    def read_bytes(self, path: str) -> bytes: ...
-
-    @abstractmethod
-    def write_text(self, path: str, text: str) -> None:
-        """Creates missing parent folders."""
-
-    @abstractmethod
-    def write_bytes(self, path: str, data: bytes) -> None:
-        """Creates missing parent folders."""
-
-    @abstractmethod
-    def exists(self, path: str) -> bool: ...
-
-    @abstractmethod
-    def is_dir(self, path: str) -> bool: ...
-
-    @abstractmethod
-    def size(self, path: str) -> int: ...
-
-    @abstractmethod
-    def list_matching(self, directory: str, pattern: str) -> list[str]:
-        """Full paths of the files in `directory` that match the glob `pattern`, sorted by name."""
-
-    @abstractmethod
-    def join(self, *parts: str) -> str: ...
-
-    @abstractmethod
-    def name(self, path: str) -> str: ...
-
-
-class Clock(ABC):
-    @abstractmethod
-    def now(self) -> datetime:
-        """The current time, timezone aware (UTC)."""
-
-
-class Diagnostics(ABC):
-    """Messages for the person at the terminal (or the agent), apart from the result."""
-
-    @abstractmethod
-    def info(self, message: str) -> None: ...
-
-    @abstractmethod
-    def warn(self, message: str) -> None: ...
-
-    @abstractmethod
-    def debug(self, message: str) -> None: ...
-
-
-@dataclass(frozen=True)
-class DocTopic:
-    name: str
-    title: str
-
-
-class Docs(ABC):
-    """The documentation that ships with the CLI."""
-
-    @abstractmethod
-    def topics(self) -> list[DocTopic]: ...
-
-    @abstractmethod
-    def topic(self, name: str) -> str: ...
-
-    @abstractmethod
-    def readme(self) -> str: ...
-
-    @abstractmethod
-    def changelog(self) -> str: ...
-
-    @abstractmethod
-    def skill(self) -> str: ...

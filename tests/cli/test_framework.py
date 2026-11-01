@@ -87,7 +87,7 @@ class DispatchTest(unittest.TestCase):
             ("pages", "--limit", "many"),
             ("pages", "--status", "deleted"),
             ("page", "2002", "--format", "html"),
-            ("page", "2002", "2003"),
+            ("versions", "2002", "2003"),
             ("move", "2005", "--position", "sideways", "--to", "2003"),
         ):
             with self.subTest(argv=argv):
@@ -99,7 +99,8 @@ class DispatchTest(unittest.TestCase):
     def test_the_overview_groups_the_commands(self):
         overview = run_cli().out
         for group in GROUP_ORDER:
-            self.assertIn(group, overview)
+            if any(command.group == group for command in all_commands()):  # a group with no command is not listed
+                self.assertIn(group, overview)
 
 
 class CatalogTest(unittest.TestCase):
@@ -118,7 +119,7 @@ class CatalogTest(unittest.TestCase):
         page = next(item for item in self.catalog["commands"] if item["name"] == "page")
         self.assertTrue(page["supportsJson"])
         self.assertFalse(page["changesData"])
-        self.assertEqual([arg["names"][0] for arg in page["arguments"]], ["ref", "--format", "--outline", "--section", "--max-chars", "--space", "--no-body", "--body-only", "--comments", "--ancestors", "--with-users", "--raw"])
+        self.assertEqual([arg["names"][0] for arg in page["arguments"]], ["ref", "--format", "--outline", "--section", "--max-chars", "--space", "--version", "--no-body", "--body-only", "--comments", "--ancestors", "--attachments", "--with-users", "--raw", "--out", "--force"])
         self.assertTrue(page["arguments"][0]["required"])
         self.assertEqual(page["arguments"][1]["choices"], ["markdown", "text", "storage"])
         self.assertIn("body{format,value,dropped[],section,truncated,totalChars}", page["jsonOutput"])
@@ -159,7 +160,7 @@ class QualityBarTest(unittest.TestCase):
                 self.assertEqual(bool(command.output), command.json_output)
 
     def test_commands_that_change_confluence_can_be_previewed(self):
-        local = {"setup-token", "remove-token", "use", "clear-space", "config"}
+        local = {"setup-token", "remove-token", "use", "clear-space", "config", "setup"}
         for command in all_commands():
             if command.writes and command.name not in local:
                 with self.subTest(command=command.name):
@@ -170,7 +171,36 @@ class QualityBarTest(unittest.TestCase):
             destinations = [arg.dest for arg in command.args]
             with self.subTest(command=command.name):
                 self.assertEqual(len(destinations), len(set(destinations)))
-                self.assertFalse({"json", "verbose"} & set(destinations))
+                self.assertFalse({"json", "verbose", "json_envelope"} & set(destinations))
+
+    def test_every_argument_kind_is_one_the_parser_knows_and_is_used_where_it_makes_sense(self):
+        kinds = {"str", "int", "float", "flag", "choice", "list", "repeat", "words"}
+        for command in all_commands():
+            for arg in command.args:
+                with self.subTest(command=command.name, arg=arg.names):
+                    self.assertIn(arg.kind, kinds)
+                    if arg.kind == "words":
+                        self.assertTrue(arg.positional, "words are what stands there: a positional")
+                    if arg.kind == "repeat":
+                        self.assertFalse(arg.positional, "an option that may be given more than once")
+                    if arg.text_only:
+                        self.assertFalse(arg.positional or arg.required, "an option that shapes the text for a person")
+
+    def test_every_command_takes_the_envelope_switch(self):
+        for command in all_commands():
+            with self.subTest(command=command.name):
+                self.assertTrue(build_parser(command).parse_args(["--json-envelope", *self.required(command)]).json_envelope)
+
+    @staticmethod
+    def required(command):
+        """The words that make the arguments of a command complete, so that the parser has nothing to complain about but the switch."""
+        words = []
+        for arg in command.args:
+            if arg.required and arg.positional:
+                words.append(arg.choices[0] if arg.choices else "1")
+            elif arg.required:
+                words += [arg.names[0], arg.choices[0] if arg.choices else "1"] if arg.kind != "flag" else [arg.names[0]]
+        return words
 
     def test_no_argument_is_named_like_a_python_keyword(self):
         import keyword

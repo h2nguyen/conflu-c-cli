@@ -13,7 +13,9 @@ A script or an agent can decide what to do from the exit code alone.
 | 4 | NOT_FOUND | Confluence has no such page, space or resource (HTTP 404). |
 | 5 | AUTH | Confluence refused the credentials or the permission (HTTP 401 or 403). |
 | 6 | REJECTED | Confluence understood the request and refused it (for example HTTP 400); its message is shown. |
-| 7 | UNAVAILABLE | Confluence cannot be reached or answered with a server error (network, timeout, HTTP 5xx). |
+| 7 | UNAVAILABLE | Confluence cannot be reached or answered with a server error (network, timeout, HTTP 5xx, HTTP 429 after the retries). |
+
+Two more codes come from the shell and not from Confluence: **130** when the command was interrupted (Ctrl+C) and **141** when the reader of its output went away (`conflu pages | head`); treat 141 as expected when you piped the output on purpose.
 
 With `--json` (or `CONFLUENCE_OUTPUT=json`) an error is printed to **stderr** as one JSON object:
 

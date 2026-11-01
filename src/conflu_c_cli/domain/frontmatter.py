@@ -8,7 +8,7 @@ from typing import Mapping
 from .errors import ValidationError
 
 _KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
-_HEADING = re.compile(r"\A[ \t]*(?:\n[ \t]*)*#[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*(?:\n|\Z)")
+_HEADING_START = re.compile(r"[ \t\n]*#([ \t]+)")
 _ALIASES = {
     "id": "page_id",
     "confluence_id": "page_id",
@@ -71,11 +71,24 @@ def parse_markdown_page(text: str) -> MarkdownPage:
 
 
 def take_title_heading(body: str) -> tuple[str, str]:
-    """`(title, rest)` when the body starts with a level-1 heading, which is then the page title; else `("", body)`."""
-    match = _HEADING.match(body)
-    if not match:
+    """`(title, rest)` when the body starts with a level-1 heading, which is then the page title; else `("", body)`. The line is cut by hand: a
+    pattern for the closing hashes and the blanks around them backtracks over every way to share a long run of blanks."""
+    start = _HEADING_START.match(body)
+    if start is None:
         return "", body
-    return match.group(1).strip(), body[match.end() :].lstrip("\n")
+    newline = body.find("\n", start.end())
+    end = len(body) if newline < 0 else newline
+    rest = body[start.end() : end]
+    if not rest:
+        if len(start.group(1)) < 2:
+            return "", body  # a title needs a character: the blanks after the `#` are all that there is to give, and one is needed to separate it
+        title = ""
+    else:
+        title = rest.rstrip(" \t")
+        bare = title.rstrip("#")
+        if bare != title and bare[-1:] in (" ", "\t"):
+            title = bare.rstrip(" \t")
+    return title.strip(), body[end + 1 if newline >= 0 else end :].lstrip("\n")
 
 
 def _one_line(value: str) -> str:

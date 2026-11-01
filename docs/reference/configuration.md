@@ -19,3 +19,4 @@ Settings come from the environment, then from the config file (`conflu config pa
 | `CONFLUENCE_MAX_TIME` | `120` | Seconds to wait for an answer. |
 | `CONFLUENCE_RETRY` | `2` | Retries of a read request after a network error or HTTP 429/502/503/504. Writes are never retried. |
 | `CONFLUENCE_OUTPUT` | `text` | `json` makes every command that supports it print JSON, as if --json was given. Meant for scripts and agents. Example: `json`. |
+| `CONFLUENCE_PROFILE` | (empty) | `agent` is for AI agents: CONFLUENCE_HIDE_USERS=true and CONFLUENCE_OUTPUT=json become the defaults (a value you set yourself still wins), and informational messages stay off standard error. Example: `agent`. |

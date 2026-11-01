@@ -2,7 +2,7 @@
 
 # Command reference
 
-conflu-c-cli 1.0.0. The same text is available offline with `conflu help COMMAND`.
+conflu-c-cli 1.1.0. The same text is available offline with `conflu help COMMAND`.
 
 ## Read
 
@@ -11,29 +11,34 @@ conflu-c-cli 1.0.0. The same text is available offline with `conflu help COMMAND
 Show one page.
 
 ```text
-conflu page PAGE [--format markdown|text|storage] [--outline] [--section TITLE|N] [--max-chars N] [--space KEY] [--no-body] [--body-only] [--comments] [--ancestors] [--with-users] [--raw] [--json]
+conflu page PAGE... [--format markdown|text|storage] [--outline] [--section TITLE|N] [--max-chars N] [--space KEY] [--version N] [--no-body] [--body-only] [--comments] [--ancestors] [--attachments] [--with-users] [--raw] [--out FILE] [--force] [--json]
 ```
 
-Shows the title, space, version, labels and the body. The body is converted from Confluence's storage format to Markdown (or plain text; with --format storage it is shown as Confluence keeps it). People and mentions are hidden unless you add --with-users. The page can be given by its id or by the address as copied from the browser.
+Shows the title, space, version, labels and the body. The body is converted from Confluence's storage format to Markdown (or plain text; with --format storage it is shown as Confluence keeps it). People and mentions are hidden unless you add --with-users. The page can be given by its id or by the address as copied from the browser. --version N shows an earlier version of the page. Several pages are read with one request; a page that is not there is an entry of `errors` (exit code 4), and the other options apply to every page.
 
-**When to use:** Use to read one page whose id, address or title you know. Start with --outline and read only the --section you need: pages can be long. To find the page first use `search`; to follow a link that is shown as page:KEY/Title, pass it as the page.
+**When to use:** Use to read pages whose id, address or title you know. Start with --outline and read only the --section you need: pages can be long. To find a page first use `search`; to follow a link shown as page:KEY/Title, pass it as the page; to see how a page changed use `versions` and `diff`.
 
 | Argument or option | Meaning |
 | --- | --- |
-| `PAGE` | Page id, the address of the page as copied from the browser, or a `page:KEY/Title` reference, which is how `conflu page` shows a link to another page. |
+| `PAGE` | Page id, the address of the page as copied from the browser, or a `page:KEY/Title` reference, which is how `conflu page` shows a link to another page. Give several to read them with one request. |
 | `--format markdown|text|storage` | Format of the body. Default: markdown. |
 | `--outline` | Show the headings with the size of each section, and not the body. Then read one part with --section. |
 | `--section TITLE|N` | Show only this section: the text of its heading (a part of it is enough when it is unique) or its number from --outline. |
 | `--max-chars N` | Cut the body to about N characters, at the end of a paragraph; the answer says that it was cut. |
 | `--space KEY` | The space of a `page:Title` reference. Default: the current space, else the whole site. |
+| `--version N` | Show this earlier version of the page (`conflu versions PAGE` lists them) instead of the current one. One page; not with --comments or --ancestors. |
 | `--no-body` | Leave the body out and show only the properties of the page. |
 | `--body-only` | Print the body and nothing else, for a file or a pipe. Wins over --json. |
 | `--comments` | Also show the comments. |
 | `--ancestors` | Also show the path of parent pages. |
+| `--attachments` | Also name the files attached to the page (one more request for each page). |
 | `--with-users` | Show people (author, owner, who saved the version, comment authors) and the account ids of mentions. Refused when CONFLUENCE_HIDE_USERS=true. |
-| `--raw` | Print Confluence's own JSON for the page (people removed unless --with-users). |
+| `--raw` | Print Confluence's own JSON for the page (people removed unless --with-users). One page; not with --comments, --ancestors, --attachments, --outline, --section or --max-chars, which are not in it. |
+| `--out FILE` | Write the body to this file as UTF-8 instead of printing it (Windows PowerShell 5.1 damages what `>` saves). One line says what was written. Changes nothing in Confluence. |
+| `--force` | Replace the file --out names if it exists (never the settings of the CLI). |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -42,25 +47,34 @@ conflu page 123456 --comments --ancestors --json    # everything as JSON, for a 
 conflu page 123456 --outline    # the headings and the size of each section: find the part worth reading
 conflu page 123456 --section Steps --max-chars 3000    # only that section, cut if it is longer
 conflu page 'page:ENG/Our Products' --outline    # follow a link: a page by its title
+conflu page 123456 654321 --outline --json    # two pages with one request; a page that is not there is an entry of `errors`
+conflu page 123456 --version 2    # an earlier version of the page, as it was saved
+conflu page 123456 --attachments    # with the names of the files attached to it
 conflu page 123456 --format storage    # the source, as Confluence keeps it
-conflu page 123456 --format storage --with-users --body-only > page.xml    # only the source, into a file
+conflu page 123456 --format storage --with-users --body-only --out page.xml    # only the source, into a file that the program writes as UTF-8
 conflu page https://example.atlassian.net/wiki/spaces/ENG/pages/123456/Title --no-body
 ```
 
 - The Markdown is a reading copy: macros, layouts, mentions, links between pages and the like cannot be shown in it. Both the text and the JSON name what is missing (`dropped`).
 - Storage format read without --with-users has the account ids of mentions blanked. `update` and `create` refuse such a body.
 - A long page costs a lot to read whole. `--outline` first, then `--section`, spends only what the question needs; `dropped` always names the whole page, not only the section.
+- An earlier version (--version) has the title, the body and the version of its time; its labels, status and place in the tree are those of the page now. To see what changed between two versions use `diff`; to bring one back use `restore`.
+- With several pages the labels are not read (the request for several pages does not give them: `labels` is null), and --raw and --body-only are for one page.
+- The id of a folder, a whiteboard, a database or a smart link is not a page: it is "not found" (exit code 4), and the hint says what the id is and which command shows it (`folder`, `whiteboard`, `database`, `smartlink`). With --ancestors a folder in the path has its title.
+- To save the body of a page, use --body-only --out FILE and not `>`: the program then writes the file itself, as UTF-8 without a byte-order mark and with plain line ends, and says so in one line (`Wrote N bytes to FILE`; `file` and `bytes` with --json). Windows PowerShell 5.1 re-encodes what `>` saves and damages every character that is not ASCII, and `update --file` would write the damage back. A file that exists is not replaced without --force, and never the settings file of the CLI. It writes a file on this computer and changes nothing in Confluence.
 
 Changes data: no.
 
-JSON output: id, title, status, spaceId, spaceKey, parentId, url, version{number,created,message,minorEdit,author}, created, updated, labels[], author and owner (null unless --with-users), ancestors[{id,title}] (with --ancestors), body{format,value,dropped[],section,truncated,totalChars} (null with --no-body or --outline; section names the part shown, truncated says that --max-chars cut the text, totalChars is the size of the whole text then), outline[{index,level,title,chars}] (with --outline), comments[] (with --comments).
+REST API: v2 (/wiki/api/v2).
+
+JSON output: id, title, status, spaceId, spaceKey ([hidden] in a personal space), parentId, url, version{number,created,message,minorEdit,author}, created, updated, labels[], author and owner (null unless --with-users), ancestors[{id,title}] (with --ancestors), body{format,value,dropped[],section,truncated,totalChars} (null with --no-body or --outline; section names the part shown, truncated says that --max-chars cut the text, totalChars is the size of the whole text then), outline[{index,level,title,chars}] (with --outline), comments[] (with --comments), attachments[{id,title,mediaType,size}] and attachmentTotal (with --attachments), version.current and currentVersion (with --version); several pages: count, pages[] (labels null) and errors[{ref,code,message,hint}]; with --body-only --out: file, bytes.
 
 ### `conflu pages`
 
 List the pages of a space.
 
 ```text
-conflu pages [--space KEY] [--title TEXT] [--status current|archived|trashed] [--sort id|created-date|modified-date|title] [--desc] [--root] [--limit N] [--cursor TOKEN] [--all] [--json]
+conflu pages [--space KEY] [--title TEXT] [--status current|archived|trashed] [--sort id|created-date|modified-date|title] [--desc] [--root] [--limit N] [--cursor TOKEN] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
 ```
 
 Lists the pages of the current space (`conflu use`) or of the space given with --space; without either, the pages of the whole site. Page ids are what the other commands take.
@@ -78,57 +92,32 @@ Lists the pages of the current space (`conflu use`) or of the space given with -
 | `--limit N` | Items per page (1 to 250). Default: 25. |
 | `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor. |
 | `--all` | Fetch every page of the list instead of one (ignores --limit and --cursor). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu pages --space ENG --limit 50
 conflu pages --space ENG --title 'Release notes' --json
 conflu pages --space ENG --all --sort modified-date --desc --json
+conflu pages --space ENG --all --select id,title,updated --format tsv    # only these columns, as TSV for a script or a spreadsheet
 ```
 
 Changes data: no.
 
-JSON output: space (key or null), count, nextCursor (null on the last page), truncated and pages[]: id, title, status, spaceId, parentId, version, updated, url.
+REST API: v2 (/wiki/api/v2).
 
-### `conflu tree`
-
-Show the pages below a page.
-
-```text
-conflu tree PAGE [--depth N] [--space KEY] [--json]
-```
-
-Shows the descendants of a page as a tree, down to --depth levels (1 to 10). Folders and other content below the page are listed with their type.
-
-**When to use:** Use to see how a topic is organised: the pages below a page. Also a way to find related pages after `search` has found one.
-
-| Argument or option | Meaning |
-| --- | --- |
-| `PAGE` | Page id, the address of the page, or a `page:KEY/Title` reference. |
-| `--depth N` | Levels to show (1 to 10). Default: 3. |
-| `--space KEY` | The space of a `page:Title` reference. Default: the current space, else the whole site. |
-| `--json` | Print the result as JSON (stable keys for scripts and agents). |
-| `-v, --verbose` | Log every request to stderr (never the credentials). |
-| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
-
-```bash
-conflu tree 123456
-conflu tree 123456 --depth 10 --json
-conflu tree 'page:ENG/Our Products' --depth 2
-```
-
-Changes data: no.
-
-JSON output: root{id,title,spaceKey}, depth, count, truncated and nodes[] in reading order: id, title, type, parentId, depth, status.
+JSON output: space (key, [hidden] for a personal space, or null), count, nextCursor (null on the last page), truncated and pages[]: id, title, status, spaceId, parentId, version, updated, url; with --select only those (dotted) keys of every page.
 
 ### `conflu versions`
 
 List the saved versions of a page.
 
 ```text
-conflu versions PAGE [--limit N] [--cursor TOKEN] [--all] [--with-users] [--json]
+conflu versions PAGE [--limit N] [--cursor TOKEN] [--all] [--with-users] [--select a,b.c] [--format table|tsv|md] [--json]
 ```
 
 Newest first, with the date and the message of each version.
@@ -142,25 +131,31 @@ Newest first, with the date and the message of each version.
 | `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor. |
 | `--all` | Fetch every page of the list instead of one (ignores --limit and --cursor). |
 | `--with-users` | Show who saved each version. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu versions 123456
 conflu versions 123456 --all --json
+conflu versions 123456 --select number,created --format md
 ```
 
 Changes data: no.
 
-JSON output: pageId, title, count, nextCursor and versions[]: number, created, message, minorEdit, author (null unless --with-users).
+REST API: v2 (/wiki/api/v2).
+
+JSON output: pageId, title, count, nextCursor and versions[]: number, created, message, minorEdit, author (null unless --with-users); with --select only those (dotted) keys of every version.
 
 ### `conflu search`
 
 Search pages with text or CQL.
 
 ```text
-conflu search [TEXT] [--space KEY] [--type page|blogpost|attachment|comment|any] [--label LABEL] [--title TEXT] [--under PAGE] [--since DATE] [--cql CQL] [--limit N] [--start N] [--all] [--match all|any|auto] [--snippets N] [--excerpts] [--with-users] [--raw] [--json]
+conflu search [TEXT...] [--phrase TEXT] [--space KEY] [--type page|blogpost|attachment|comment|any] [--label LABEL] [--title TEXT] [--under PAGE] [--since DATE] [--cql CQL] [--limit N] [--start N] [--all] [--match all|any|auto] [--snippets N] [--excerpts] [--with-users] [--raw] [--select a,b.c] [--format table|tsv|md] [--json]
 ```
 
 Searches the whole site, or one space with --space, in titles and bodies; the other options narrow the result. The text becomes words and "quoted phrases": punctuation and filler words in English and German (how, do, the, wie, ich ...) are left out, and the answer says which. Case does not matter, stems match (groups finds group) and * is a wildcard. By default every word must occur; when no page holds all of them the search is repeated for the pages that hold some, and the answer says so (--match any asks for that directly, --match all never relaxes). Each hit has its path, labels and version. --snippets N reads the first N pages with one request and shows the passage around your words, so that you need not open a page to judge it. --cql takes a query written in Confluence's query language and replaces the other options.
@@ -169,37 +164,53 @@ Searches the whole site, or one space with --space, in titles and bodies; the ot
 
 | Argument or option | Meaning |
 | --- | --- |
-| `TEXT` | Words to search for, or a question; "quote a phrase" to keep its words together. |
+| `TEXT` | Words to search for, or a question; several words need no quotes. "Quotes" keep a phrase together (single quotes around the whole text then). `@FILE` reads it from that file if it exists (else `@alex` is text), `-` from standard input (at most 1 MiB). |
+| `--phrase TEXT` | An exact phrase, without double quotes (Windows PowerShell 5.1 removes them); repeat for more. |
 | `--space KEY` | Only this space. |
 | `--type page|blogpost|attachment|comment|any` | Kind of content. Default: page. |
 | `--label LABEL` | Only content with this label. |
 | `--title TEXT` | Only content whose title contains this text. |
 | `--under PAGE` | Only the descendants of this page (id or address). |
 | `--since DATE` | Only content changed on or after this date (YYYY-MM-DD). |
-| `--cql CQL` | A CQL query. Replaces TEXT and the options above. |
+| `--cql CQL` | A CQL query. Replaces TEXT, --phrase and the options above; `@FILE` or `-` reads it from a file or from standard input (at most 1 MiB). |
 | `--limit N` | Results per request (1 to 250; Confluence may allow fewer). Default: 25. |
 | `--start N` | Index of the first result. Default: 0. |
 | `--all` | Fetch every result instead of one request (ignores --limit and --start). |
 | `--match all|any|auto` | all: every word must occur. any: one is enough. auto: all, and any when no page holds all of them. Default: auto. |
 | `--snippets N` | Read the first N hits (up to 25) and show the passage around the searched words, with people hidden. One extra request. Default: 0. |
 | `--excerpts` | Show the excerpt of the search index for each result. Needs --with-users: it can name people. |
-| `--with-users` | Show the excerpts, which can name people. Refused when CONFLUENCE_HIDE_USERS=true. |
-| `--raw` | Print Confluence's own JSON (people and excerpts removed unless --with-users). |
+| `--with-users` | List the people that a query finds (`type = user`) and show the excerpts, which can name people. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--raw` | Print Confluence's own JSON (people, their hits and excerpts removed unless --with-users). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu search 'retention policy'
+conflu search story points reference --space ENG    # several words need no quotes
 conflu search 'how do I request an SSO group for QA?' --space ENG --snippets 5 --json    # a question works: filler words are dropped
 conflu search '"SSO group" roles' --space ENG --match any    # an exact phrase, plus a word
-conflu search 'data quality' --space ENG --label adr --json
+conflu search roles --phrase 'SSO group' --phrase 'access request' --space ENG    # exact phrases without double quotes
+conflu search '@question.txt' --space ENG --snippets 3    # the text in a file: the form that survives Windows PowerShell 5.1
+conflu search 'release notes' --space ENG --label adr --json
+conflu search 'retention policy' --space ENG --select id,title,spaceKey --format tsv    # only these columns, as TSV
 conflu search --cql 'type = page AND space = "ENG" AND lastmodified >= "2026-10-01"' --all --json
+conflu search --cql '@query.txt' --all --json    # a CQL query in a file
 ```
+
+- A text that starts with @ is read from the file of that name if there is one, else searched for as text (a warning says so); a space in front, or --phrase, always makes it text. --cql @FILE names a file.
+- A file or standard input is read up to 1 MiB (one byte more is read to see that there is more), however large the file says it is: a device or a pipe that does not end is refused at the limit, with a message that names it.
+- The search index lists people and spaces besides pages (`--cql 'type = user ...'`, or `--type any`). Without --with-users no person is listed, in the hits or in --raw, and the notes say how many hits were left out (never who); a personal space is named after its owner, so it comes out as `[personal space]` with the key `[hidden]` and no address. CONFLUENCE_HIDE_USERS=true refuses --with-users.
+- In Windows PowerShell 5.1 a search text or a CQL query with double quotes (title ~ "a b") arrives broken, because PowerShell removes them inside an argument: put it in a file and pass it in single quotes, '@query.txt' (a bare @name is splatting in PowerShell), pipe it in with `-`, or give exact phrases with --phrase 'exact words'.
 
 Changes data: no.
 
-JSON output: total, count, start, cql, match (all, any or cql), relaxed (true when no page held all words), terms[] and ignored[] (what was searched for and what was left out), notes[] (what the person at the terminal is told: filler left out, the search relaxed, nothing found and what to try), truncated and hits[]: id, type, title, spaceKey, path (the parent pages, or null), labels[], version, url, excerpt (null unless --with-users: it can name people), snippet and matched[] (with --snippets: the passage around the words, from the page itself, and which words the page holds), lastModified.
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: total, count, start, cql (the query that ran; the key of a personal space in it is [hidden] unless --with-users), match (all, any or cql), relaxed (true when no page held all words), terms[] and ignored[] (what was searched for and what was left out), notes[] (what the person at the terminal is told: filler left out, the search relaxed, hits about people left out, nothing found and what to try), truncated and hits[]: id, type, title, spaceKey, path (the parent pages, or null), labels[], version, url, excerpt (null unless --with-users: it can name people), snippet and matched[] (with --snippets: the passage around the words, from the page itself, and which words the page holds), lastModified; with --select only those (dotted) keys of every hit.
 
 ### `conflu export`
 
@@ -223,6 +234,7 @@ Writes every page of a space (--space), or a page with everything below it (--pa
 | `--dry-run` | Read the pages and say what would be written. Writes nothing. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -235,239 +247,431 @@ conflu export --page 123456 --out tmp/guide --dry-run
 
 Changes data: no.
 
+REST API: v2 (/wiki/api/v2).
+
 JSON output: directory, space, root, format, dryRun, count, indexFile, truncated, notes[] and pages[]: id, title, parentId, path (the parent pages within the export, or null), file, version, updated, lossy[].
+
+### `conflu tree`
+
+Show what is below a page or a folder.
+
+```text
+conflu tree PAGE [--depth N] [--space KEY] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Shows the descendants of a page, or of a folder, a whiteboard, a database or a smart link, as a tree, down to --depth levels (1 to 10). Anything that is no page is listed with its type.
+
+**When to use:** Use to see how a topic is organised: the pages, folders, whiteboards, databases and smart links below a page or a folder. Also a way to find related pages after `search` has found one.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `PAGE` | Page id, the address of the page, a `page:KEY/Title` reference, or the id or address of a folder, whiteboard, database or smart link. |
+| `--depth N` | Levels to show (1 to 10). Default: 3. |
+| `--space KEY` | The space of a `page:Title` reference. Default: the current space, else the whole site. |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu tree 123456
+conflu tree 123456 --depth 10 --json
+conflu tree 7001 --depth 2    # everything below a folder
+conflu tree 'page:ENG/Our Products' --depth 2
+conflu tree 123456 --depth 5 --select id,title,depth --format tsv    # the tree as flat rows
+```
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: root{id,title,type,spaceKey ([hidden] in a personal space)}, depth, count, truncated and nodes[] in reading order: id, title, type, parentId, depth, status; with --select only those (dotted) keys of every node.
+
+### `conflu diff`
+
+Show what changed between two versions of a page.
+
+```text
+conflu diff PAGE [--from-version N] [--to-version N|current] [--context LINES] [--max-chars N] [--json]
+```
+
+A unified diff of the Markdown of two versions of the page: by default the current version against the one before it. --to names the later version (a number, or `current`), --from the earlier one; the two may be given in either order. People are hidden as in `page` (a mention is `@user`, an e-mail address `[email]`), so they are not in the diff. What Markdown cannot show (macros, layouts, mentions) is not compared: `dropped` names it. A page with one version, or two versions that read the same, says so; that is no failure. The first version of a page has nothing before it: `--to 1` says so, and `--from 1` compares it with the current one.
+
+**When to use:** Use to see what an edit changed, or what `restore` would bring back. It compares the Markdown of two versions; for the list of versions and their messages use `versions`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `PAGE` | Page id, or the address of the page. |
+| `--from-version, --from N` | The earlier version. Default: the version before --to. |
+| `--to-version, --to N|current` | The later version: a number or `current`. Default: current. |
+| `--context LINES` | Lines of unchanged text around each change. Default: 3. |
+| `--max-chars N` | Cut the diff to about N characters, after the last whole line; the answer says that it was cut. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu diff 123456    # the current version against the one before it
+conflu diff 123456 --from 2 --to 5 --context 1    # version 2 against version 5, with one line of context
+conflu diff 123456 --from 3 --json    # version 3 against the current one, as JSON: added, removed and diff
+```
+
+- `conflu versions PAGE` lists the version numbers; a number that the page does not have is a not-found error that says where the page is now.
+- The messages of the versions are redacted like any text from Confluence. The title of each version is named too: a change of the title is not in the diff of the body.
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: pageId, title, from and to ({number, created, message, title, current}; from is null for a page with one version, and for version 1 asked for as --to, which has nothing before it), identical (the Markdown of the two reads the same; false for version 1 asked for as --to, where nothing was compared), added and removed (lines), truncated and totalChars (when --max-chars cut the diff), dropped[], sourceIdentical (the storage format is the same too), note (null or what the text says instead of a diff) and diff.
 
 ### `conflu comments`
 
 Show the comments of a page.
 
 ```text
-conflu comments PAGE [--inline] [--format markdown|text|storage] [--with-users] [--json]
+conflu comments PAGE [--inline] [--since WHEN] [--last N] [--resolution STATE] [--format markdown|text|storage] [--with-users] [--select a,b.c] [--list-format table|tsv|md] [--json]
 ```
 
-Shows the footer comments, each conversation as its first comment followed by the replies. --inline adds the comments that were made on a piece of text. Authors and mentions are hidden unless you add --with-users.
+Shows the footer comments, each conversation as its first comment followed by the replies. Authors and mentions are hidden unless you add --with-users; every comment has byMe and authorRef instead (a pseudonym of its author, the same for the same token).
 
-**When to use:** Use to read the discussion on a page; with --inline also the comments made on a piece of text.
+**When to use:** Use to read the discussion on a page. --inline adds the comments made on a piece of text, --since and --last pick the recent ones, --resolution the open or resolved inline ones.
 
 | Argument or option | Meaning |
 | --- | --- |
 | `PAGE` | Page id, or the address of the page. |
 | `--inline` | Also show the inline comments. |
+| `--since WHEN` | Only comments saved in the last 2d, 12h or 1w, or since a date (2026-10-15) or an ISO time; without an offset it is UTC. A comment is saved when it is written, and again when somebody changes it. |
+| `--last N` | Only the N newest comments (of those that --since lets through). |
+| `--resolution STATE` | Only the inline comments in this state: open, resolved, reopened or dangling (the text on the page is gone). The footer comments have none and are left out; open and reopened are two states. |
 | `--format markdown|text|storage` | Format of the comment text. Default: markdown. |
 | `--with-users` | Show who wrote each comment. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--list-format table|tsv|md` | How the list is printed: table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu comments 123456
 conflu comments 123456 --inline --json
+conflu comments 123456 --inline --select id,kind,updated --list-format tsv    # one line per comment, without the text
+conflu comments 123456 --since 2d --last 3    # the newest three of the last two days
+conflu comments 123456 --resolution open --json    # the inline comments that nobody has resolved
 ```
+
+- `--format` is the format of the comment text; `--list-format` is how the list is printed (the other list commands call that `--format`).
+- `--since` and `--last` look at the time a comment was last saved: when it was written, unless somebody changed it.
+- `byMe` and the `(you)` mark need to know whom the token belongs to: one more request, and only when there are comments. `authorRef` is a stable pseudonym (`a-` and eight hexadecimal digits) of the author, keyed with the API token, so the comments of one person can be told apart while names stay hidden.
 
 Changes data: no.
 
-JSON output: pageId, count and comments[]: id, kind (footer or inline), updated, parentId (null for the first comment of a conversation), resolution (inline comments), author (null unless --with-users), body{format,value,dropped[]}.
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: pageId, total (before --since and --last), count, since (the moment --since named, or null) and comments[]: id, kind (footer or inline), updated, parentId (null for the first comment of a conversation), resolution (inline comments), author (null unless --with-users), authorRef (null without a token), byMe (null when not known), body{format,value,dropped[]}; with --select only those (dotted) keys of every comment.
 
 ### `conflu labels`
 
-List the labels of a page.
+List the labels of a page or of a space.
 
 ```text
-conflu labels PAGE [--json]
+conflu labels [PAGE] [--space KEY] [--limit N] [--cursor TOKEN] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
 ```
 
-**When to use:** Use to see how a page is tagged.
+With a page: its labels. With --space KEY: the labels that the pages and blog posts of the space carry, by name, one page of the list at a time (--limit, --cursor) or all of it (--all). Name a page or a space, not both.
+
+**When to use:** Use to see how one page is tagged, or with --space which labels the content of a space carries. To find the pages that carry a label, use `search` with its label option.
 
 | Argument or option | Meaning |
 | --- | --- |
-| `PAGE` | Page id, or the address of the page. |
+| `PAGE` | Page id, or the address of the page. Leave it out to list the labels of a space. |
+| `--space KEY` | List the labels that the content of this space carries. |
+| `--limit N` | With --space: labels per page of the list (1 to 250, default 25). |
+| `--cursor TOKEN` | With --space: continue after the end of the previous answer: pass its nextCursor. |
+| `--all` | With --space: fetch every page of the list instead of one (ignores --limit and --cursor). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu labels 123456
 conflu labels 123456 --json
+conflu labels 123456 --select name --format tsv    # only the names, one per line
+conflu labels --space ENG --all --json    # every label that the content of the space carries
 ```
+
+- `conflu search --label NAME` finds the pages that carry a label. --space lists the labels of the content of a space, not the labels of the space itself; the current space of `conflu use` is not assumed, name the page or the space.
 
 Changes data: no.
 
-JSON output: pageId and labels[]: name, prefix.
+REST API: v2 (/wiki/api/v2).
+
+JSON output: with a page: pageId and labels[]: name, prefix. With --space: space (key, [hidden] for a personal space), spaceId, count, nextCursor, truncated and labels[]: name, prefix; with --select only those (dotted) keys of every label.
 
 ### `conflu attachments`
 
-List the files attached to a page.
+List the files attached to a page or a blog post.
 
 ```text
-conflu attachments PAGE [--name FILE] [--limit N] [--cursor TOKEN] [--all] [--json]
+conflu attachments PAGE [--name FILE] [--limit N] [--cursor TOKEN] [--all] [--with-users] [--select a,b.c] [--format table|tsv|md] [--json]
 ```
 
-**When to use:** Use to list the files attached to a page before you `download` one.
+Lists id, name, size, type, version and the time of the first upload. A blog post works as a page does: Confluence is asked for a page first, and for a blog post when the id is none. File names and comments are shown without e-mail addresses and personal links unless you add --with-users.
+
+**When to use:** Use to list the files attached to a page or a blog post before you `download` one. `attachment` shows one file with its versions and labels.
 
 | Argument or option | Meaning |
 | --- | --- |
-| `PAGE` | Page id, or the address of the page. |
+| `PAGE` | Page id, or the address of the page; a blog post works too, by its id or its address. |
 | `--name FILE` | Only the attachment with this file name. |
 | `--limit N` | Items per page (1 to 250). Default: 50. |
 | `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor. |
 | `--all` | Fetch every page of the list instead of one (ignores --limit and --cursor). |
+| `--with-users` | Show names and comments as they are, with e-mail addresses. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu attachments 123456
 conflu attachments 123456 --json
+conflu attachments 123456 --select id,title,size --format tsv    # the size in bytes, as TSV
 ```
 
 Changes data: no.
 
-JSON output: pageId, count, nextCursor and attachments[]: id, title, mediaType, size, version, created, pageId, downloadLink, comment.
+REST API: v2 (/wiki/api/v2).
 
-### `conflu download`
+JSON output: pageId (null for a blog post), blogPostId (null for a page), count, nextCursor and attachments[]: id, title, mediaType, size, version, created, updated, pageId, blogPostId, downloadLink, comment; with --select only those (dotted) keys of every attachment.
 
-Download attachments of a page.
+### `conflu attachment`
+
+Show one attachment, with its versions and labels.
 
 ```text
-conflu download ATTACHMENT_OR_PAGE [--name FILE] [--all] [--out DIR] [--force] [--dry-run] [--json]
+conflu attachment ID [--versions] [--labels] [--limit N] [--cursor TOKEN] [--all] [--with-users] [--select a,b.c] [--format table|tsv|md] [--json]
 ```
 
-Downloads one attachment by its id (att123456, from `conflu attachments`), or files of a page by name (--name, as often as you like) or all of them (--all). Files go into --out (the current folder by default) under their own names. A file that exists is replaced only with --force. The credentials are sent to Confluence only, never to the media service that serves the file.
+Shows the properties of the attachment with this id (att123456, from `conflu attachments`). --versions adds the versions, newest first (the size of each is asked for, one request each, for the first 50); --labels adds its labels. Who saved a version is left out unless you add --with-users, which also shows names and comments as they are.
 
-**When to use:** Use to save attachments of a page into a folder. It never overwrites a file without --force.
+**When to use:** Use to look at one attachment before you save or read it: its size, type and version, and with --versions what each version said and how large it was, so that `download --version N` can take the one you need.
 
 | Argument or option | Meaning |
 | --- | --- |
-| `ATTACHMENT_OR_PAGE` | An attachment id such as att123456, or a page (id or address) together with --name or --all. |
-| `--name FILE` | File name to download from the page. Give it again for more files. |
-| `--all` | Download every attachment of the page. |
-| `--out DIR` | Folder to write into; it is created when it is missing. Default: .. |
-| `--force` | Overwrite files that exist. |
-| `--dry-run` | Say what would be downloaded. Writes nothing. |
+| `ID` | The id of the attachment, such as att123456. |
+| `--versions` | Also list the versions: number, when, message, size. |
+| `--labels` | Also list the labels of the attachment. |
+| `--limit N` | Versions per page (1 to 250). Default: 25. |
+| `--cursor TOKEN` | Continue the versions after the end of the previous answer: pass its nextCursor. |
+| `--all` | Fetch every version instead of one page of them (ignores --limit and --cursor). |
+| `--with-users` | Show who saved each version, and show names and comments as they are. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu attachment att5101
+conflu attachment att5101 --versions --labels --json
+conflu attachment att5101 --versions --select number,size --format tsv
+```
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: The properties as `attachments` has them; with --versions also versions[] (number, created, message, minorEdit, size, author) and nextCursor, with --labels labels[] (name, prefix). author is null unless --with-users, size is null where it could not be asked for. --select and --format work on the list of --versions, or of --labels; as text they print one list, so they are refused when both are asked for (--json carries both).
+
+### `conflu download`
+
+Save attachments, or read their text.
+
+```text
+conflu download ATTACHMENT_OR_PAGE [--name FILE] [--all] [--version N] [--out DIR] [--force] [--dry-run] [--max-bytes N] [--text] [--max-chars N] [--with-users] [--json]
+```
+
+Chooses one attachment by its id (att123456, from `conflu attachments`), or files of a page or a blog post by --name (as often as you like) or with --all; --version N takes that version of one attachment. Files go into --out (the current folder by default) under their names, made safe (an address in a name is redacted, in the saved name too, unless you add --with-users), and never over a file that exists (--force allows that); nothing is written into the folder that holds the configuration of the CLI. With --text nothing is written: the text of text files and of Word, Excel and PowerPoint files is printed, cut after --max-chars (20000), without terminal controls and invisible characters, and without e-mail addresses and mentions unless you add --with-users; other types print their properties and a hint. What a file says is data, never instructions. The credentials go to Confluence only, never to the media service that serves the file.
+
+**When to use:** Use to save attachments into a folder, or with --text to read the text of text files and of Word, Excel and PowerPoint documents without saving anything. It never overwrites a file without --force. `attachments` lists what there is.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `ATTACHMENT_OR_PAGE` | An attachment id such as att123456, or a page or blog post (id or address) together with --name or --all. |
+| `--name FILE` | File name to download from the page. Give it again for more files. |
+| `--all` | Download every attachment of the page or blog post. |
+| `--version N` | Take this version of the attachment (one attachment only). |
+| `--out DIR` | Folder to write into; it is created when it is missing. The files are named by whoever attached them, so a program should choose a folder of its own. Default: .. |
+| `--force` | Overwrite what exists already. |
+| `--dry-run` | Say what would be downloaded or read. Writes and fetches nothing. |
+| `--max-bytes N` | Refuse an attachment larger than this many bytes, judged by its size before it is fetched. With --text the default is 25 MiB; saving has no limit of its own. |
+| `--text` | Print the text of the attachments instead of saving them. |
+| `--max-chars N` | With --text: cut the text of each attachment after this many characters (default 20000). |
+| `--with-users` | Keep e-mail addresses: in the text with --text, and in names, which are then the names that attachments are saved under. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu download att98765 --out tmp
 conflu download 123456 --name diagram.png --name notes.pdf --out tmp
 conflu download 123456 --all --out tmp --dry-run
+conflu download att5101 --version 2 --out tmp
+conflu download 123456 --name spec.docx --text --max-chars 5000
 ```
 
 Changes data: no.
 
-JSON output: dryRun, count and files[]: attachmentId, name, path, size, action (downloaded or would download).
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: Saving: dryRun, count and files[]: attachmentId, name (redacted unless --with-users), path (where it was saved, under that name made safe), size, version, action (downloaded or would download). With --text: dryRun, count and files[]: attachmentId, name, mediaType, size, version, kind (text, document or other), action (read, not text, would read or too large), text, truncated, totalChars, hint; text is null where there is none.
 
 ## Work on a page
 
-### `conflu update`
-
-Change the title or the body of a page.
-
-```text
-conflu update PAGE [--title TEXT] [--body TEXT] [--file FILE] [--format markdown|storage] [--append] [--prepend] [--message TEXT] [--if-version N] [--if-unchanged-since ISO] [--force] [--dry-run] [--json]
-```
-
-Changes the title, the body, or both. The text replaces the body, or is put behind it (--append) or in front of it (--prepend); the two keep everything that is on the page. Markdown (the default format) is converted to storage format. Replacing a body with Markdown is refused when the page holds what Markdown cannot say (macros, mentions, layouts, links between pages ...) unless you add --force; `conflu page PAGE --json` shows it under `dropped`. The new version number is the current one plus one, so Confluence itself refuses (exit code 3) when somebody saved in between.
-
-**When to use:** Use to change the title or the body of one existing page. Preview with --dry-run, guard with --if-version, and prefer --append to replacing the body.
-
-| Argument or option | Meaning |
-| --- | --- |
-| `PAGE` | Page id, or the address of the page. |
-| `--title TEXT` | The new title. |
-| `--body TEXT` | The text, in the --format. A longer text is easier in a file: --file. |
-| `--file FILE` | Read the text from a file (`-` is standard input). |
-| `--format markdown|storage` | Format of the text: markdown, which is converted, or storage, which is sent as it is. Default: markdown. |
-| `--append` | Put the text behind the current body instead of replacing it. |
-| `--prepend` | Put the text in front of the current body instead of replacing it. |
-| `--message TEXT` | A message stored with the new version. |
-| `--if-version N` | Refuse (exit code 3) unless the page is at this version now. |
-| `--if-unchanged-since ISO` | Refuse (exit code 3) when the page changed in Confluence after this time (ISO 8601, for example the time you read it). It is a check just before the write, not a lock; the version number of an update is a second, atomic guard. |
-| `--force` | Replace a body with Markdown even though what Markdown cannot say is lost. |
-| `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
-| `--json` | Print the result as JSON (stable keys for scripts and agents). |
-| `-v, --verbose` | Log every request to stderr (never the credentials). |
-| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
-
-```bash
-conflu update 123456 --title 'Release notes 2026.10' --dry-run
-conflu update 123456 --file notes.md --append --message 'Added the October notes' --if-version 7
-conflu update 123456 --file page.xml --format storage --dry-run
-```
-
-- Text with quotes or $ is easiest in a file: --file notes.md. In Windows PowerShell 5.1 double quotes inside an argument are removed.
-- A change of the title alone does not touch the body.
-
-Changes data: **yes, preview with --dry-run**.
-
-JSON output: action (updated or unchanged), dryRun, pageId, title, url, versionFrom, versionTo, lost[], labels[] and payload (exactly what is sent).
-
 ### `conflu move`
 
-Move a page below, before or after another page.
+Move a page below, before or after another page, or below a folder.
 
 ```text
-conflu move PAGE --to TARGET [--position append|before|after] [--dry-run] [--json]
+conflu move PAGE --to TARGET [--position append|before|after] [--if-version N] [--if-unchanged-since ISO] [--with-users] [--dry-run] [--json]
 ```
 
-With the default position `append` the page becomes the last child of the target; `before` and `after` put it next to the target, under the target's parent.
+With the default position `append` the page becomes the last child of the target; `before` and `after` put it next to the target, under the target's parent. The target may also be a folder, a whiteboard, a database or a smart link: then only `append` is possible, and the page is saved again with its body untouched, as the next version, below the new parent (a version message says `Moved below ...`; Confluence merges a save into an unpublished draft of the page, if somebody has one); a page that is below it already is left as it is. A folder, a whiteboard, a database or a smart link cannot be moved: the API has no call for it.
 
-**When to use:** Use to move one page below, before or after another page. Preview with --dry-run.
+**When to use:** Use to move one page below, before or after another page, or below a folder. Preview with --dry-run.
 
 | Argument or option | Meaning |
 | --- | --- |
 | `PAGE` | Page id, or the address of the page to move. |
-| `--to TARGET` | The page to move it to (id or address). |
-| `--position append|before|after` | Where, relative to the target. Default: append. |
+| `--to TARGET` | The page, folder, whiteboard, database or smart link to move it to (id or address). |
+| `--position append|before|after` | Where, relative to the target. Only append is possible when the target is no page; before and after are refused for a page at the top level of its space (the home page, for one). Default: append. |
+| `--if-version N` | Refuse (exit code 3) unless the page is at this version now. |
+| `--if-unchanged-since ISO` | Refuse (exit code 3) when the page changed in Confluence after this time (ISO 8601, for example the time you read it). It is a check just before the write, not a lock; the version number of an update is a second, atomic guard. |
+| `--with-users` | Show the request of a move that saves the page exactly as it is sent, with the people (mentions) and the addresses that the page body holds. Refused when CONFLUENCE_HIDE_USERS=true. |
 | `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu move 123456 --to 654321 --dry-run
 conflu move 123456 --to 654321 --position before
+conflu move 123456 --to 7001 --dry-run    # below a folder: it saves a new version of the page
 ```
 
 Changes data: **yes, preview with --dry-run**.
 
-JSON output: action (moved), dryRun, pageId, title, url and payload{pageId,position,targetId}.
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
 
-### `conflu comment`
+JSON output: action (moved, or unchanged for a page that is below the folder already), dryRun, pageId, title, url (redacted like every address unless --with-users: cut at the id when the title in it holds an address, and the address by id alone in a personal space), versionFrom, versionTo, lost[], labels[], payload (what is sent: pageId, position and targetId for a page as the target; the whole request, with the body, below a folder), payloadRedacted (true when that body is shown without the people and addresses in it; --with-users shows it as it is), target{id,type,title}, confirmed (the page, as Confluence answers after the move, is below the new parent; false when it is not; null for a dry run, a page that did not move, and a move that could not be read back, which is no failure) and message (null unless the move could not be confirmed).
 
-Add a comment to a page.
+### `conflu restore`
+
+Bring an earlier version of a page back.
 
 ```text
-conflu comment PAGE [--text TEXT] [--file FILE] [--format markdown|storage] [--reply-to COMMENT] [--dry-run] [--json]
+conflu restore PAGE --version N [--message TEXT] [--restore-title] [--if-version N] [--if-unchanged-since ISO] [--dry-run] [--json]
 ```
 
-Adds a footer comment, or with --reply-to an answer to a comment. The text is Markdown unless --format says storage.
+Saves a NEW version of the page with the body of version N (and with --restore-title also its title); the versions in between stay in the history. The version must exist and must not be the current one. The page must be current. The message of the new version is `Restored version N` unless you give one. --if-version and --if-unchanged-since refuse (exit code 3) when the page is not as you read it. Confluence has no version guard for a restore, so both are a check just before the write, not a lock; the answer names the version that the page reached, and says when it is not the next one. The content is restored by Confluence itself: nothing is converted, so macros and mentions come back as they were. The dry run reads the page and the version and sends nothing.
 
-**When to use:** Use to add a footer comment to a page, or to answer a comment with --reply-to. Preview with --dry-run.
+**When to use:** Use to undo an edit: it saves a new version with the content of an earlier one, and nothing is lost, since the history keeps every version. Read the old version first (`page --version`, `diff`) and preview with --dry-run.
 
 | Argument or option | Meaning |
 | --- | --- |
 | `PAGE` | Page id, or the address of the page. |
-| `--text TEXT` | The comment. A longer text is easier in a file: --file. |
-| `--file FILE` | Read the text from a file (`-` is standard input). |
-| `--format markdown|storage` | Format of the text: markdown, which is converted, or storage, which is sent as it is. Default: markdown. |
-| `--reply-to COMMENT` | Id of the comment to answer (`conflu comments PAGE --json` lists them). |
+| `--version N` | The version to bring back (`conflu versions PAGE` lists them). |
+| `--message TEXT` | A message stored with the new version. Default: Restored version N. |
+| `--restore-title` | Also give the page the title that version had. |
+| `--if-version N` | Refuse (exit code 3) unless the page is at this version now. |
+| `--if-unchanged-since ISO` | Refuse (exit code 3) when the page changed in Confluence after this time (ISO 8601, for example the time you read it). It is a check just before the write, not a lock; the version number of an update is a second, atomic guard. |
 | `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu restore 123456 --version 2 --dry-run    # what would come back, and the payload
+conflu restore 123456 --version 2 --message 'Back to the reviewed text' --if-version 5
+conflu restore 123456 --version 1 --restore-title --json
+```
+
+- Text with quotes or $ is easiest in a file: --file notes.md. In Windows PowerShell 5.1 double quotes inside an argument are removed.
+- A restore makes a new version; to undo it, restore the version that it covered (`conflu versions PAGE` names it).
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: action (restored), dryRun, pageId, title, url, restoredVersion, versionFrom, versionTo (in a dry run the version it would make), added and removed (lines that the restored Markdown adds to and takes from the current one) and payload (exactly what is sent: it names the version and holds no content).
+
+### `conflu comment`
+
+Add, read or change a comment.
+
+```text
+conflu comment PAGE [--text TEXT] [--file FILE] [--get ID] [--edit ID] [--resolve ID] [--reopen ID] [--reply-to COMMENT] [--format markdown|text|storage] [--with-users] [--if-version N] [--if-unchanged-since ISO] [--force] [--dry-run] [--json]
+```
+
+Adds a footer comment, or with --reply-to an answer to a comment of that page. --get ID shows one comment; --edit ID replaces its text (--text or --file is the new text); --resolve ID and --reopen ID resolve an inline comment or open it again. They exclude each other. The text is Markdown unless --format says storage. A change reads the comment first, and its dry run shows a diff. It is refused when the new text holds [email] or [personal link] (what a reading puts in place of an address or a profile link), and when replacing with Markdown would lose a mention or a macro (--force allows that). --if-version and --if-unchanged-since refuse a change of a comment that has moved on (exit code 3). When nothing changes, nothing is sent. A comment is never deleted.
+
+**When to use:** Use to add a comment to a page or answer one (--reply-to), read one (--get), correct one you wrote (--edit), or resolve an inline comment (--resolve) and open it again (--reopen). Everyone who sees the page sees a comment: write or change one only when asked, preview with --dry-run.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `PAGE` | Page id, or the address of the page. |
+| `--text TEXT` | The comment, or with --edit its new text. A longer text is easier in a file: --file. |
+| `--file FILE` | Read the text from a file (`-` is standard input). |
+| `--get ID` | Show this comment (`comments` lists the ids). |
+| `--edit ID` | Replace the text of this comment with --text or --file. An inline comment stays as resolved or open as it is. |
+| `--resolve ID` | Resolve this inline comment. |
+| `--reopen ID` | Open this inline comment again. |
+| `--reply-to COMMENT` | When adding: the id of the comment to answer (`comments` lists them). It is read first and must be on this page (exit code 4 otherwise, also with --dry-run); the request names it in place of the page. |
+| `--format markdown|text|storage` | Format of the text: markdown, which is converted, or storage, which is sent as it is; with --get also text. Default: markdown. |
+| `--with-users` | With --get: show who wrote the comment. With --resolve and --reopen: show the request as it is, with the people in the text of the comment. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--if-version N` | With --edit, --resolve and --reopen: refuse (exit code 3) unless the comment is at this version now (--get shows it). |
+| `--if-unchanged-since ISO` | With --edit, --resolve and --reopen: refuse (exit code 3) when the comment was saved after this time (ISO 8601, for example when you read it). Checked again just before the write; the version number of the change is a second, atomic guard. |
+| `--force` | With --edit: replace a comment with Markdown even though what Markdown cannot say is lost. |
+| `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu comment 123456 --text 'Reviewed, no findings.' --dry-run
 conflu comment 123456 --file review.md
+conflu comment 123456 --get 4001 --json
+conflu comment 123456 --edit 4001 --file new.md --dry-run    # shows the diff, sends nothing
+conflu comment 123456 --edit 4001 --text 'Fixed in 2.1.' --if-version 1
+conflu comment 123456 --edit 4001 --text 'Fixed in 2.1.' --if-unchanged-since 2026-10-15T08:00:00Z
+conflu comment 123456 --resolve 4003 --dry-run
+conflu comment 123456 --reopen 4003
 ```
 
 - Text with quotes or $ is easiest in a file: --file notes.md. In Windows PowerShell 5.1 double quotes inside an argument are removed.
+- A change makes a new version of the comment; the earlier versions stay in Confluence. Confluence lets only the author change the text of a comment (exit code 5). A comment that somebody else changed meanwhile is exit code 3.
+- --resolve and --reopen send the comment's own text back. The request that is printed leaves out the people and addresses in it (`payloadRedacted`) unless you add --with-users; what is sent is always the comment as it is.
 
 Changes data: **yes, preview with --dry-run**.
 
-JSON output: pageId, dryRun, commentId (null in a dry run) and payload (exactly what is sent).
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: adding: pageId, dryRun, commentId (null in a dry run) and payload (exactly what is sent). --get: pageId, id, kind, updated, version, parentId, resolution, author (null unless --with-users), authorRef, byMe, body{format,value,dropped[]}. --edit, --resolve and --reopen: action (updated, resolved, reopened or unchanged), dryRun, pageId, commentId, kind, versionFrom, versionTo, updated, resolution, byMe, diff, lost[], warnings[], payload (what is sent, null when nothing is) and payloadRedacted (true when the printed payload leaves out the people and addresses in the text that --resolve and --reopen send back; --with-users shows it as it is).
 
 ### `conflu label`
 
@@ -489,6 +693,7 @@ Adds the labels of --add and removes those of --remove (comma separated). A labe
 | `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -498,6 +703,8 @@ conflu label 123456 --remove draft
 
 Changes data: **yes, preview with --dry-run**.
 
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
 JSON output: pageId, dryRun, added[], removed[] and labels[] (the names after the change; the current ones in a dry run).
 
 ### `conflu attach`
@@ -505,12 +712,12 @@ JSON output: pageId, dryRun, added[], removed[] and labels[] (the names after th
 Attach files to a page.
 
 ```text
-conflu attach PAGE FILE... [--comment TEXT] [--minor] [--dry-run] [--json]
+conflu attach PAGE FILE... [--comment TEXT] [--minor] [--dry-run] [--if-version N] [--if-unchanged-since ISO] [--json]
 ```
 
-Uploads the files. A file whose name the page has already becomes a new version of that attachment. In the text of a page an image is referred to by its file name: attach it first, then write the file name where Markdown wants the address of an image.
+Uploads the files. A file whose name the page has already becomes a new version of that attachment; --if-version and --if-unchanged-since refuse that when the attachment is not as you read it. The configuration file of the CLI and any file that holds the API token are refused, in a dry run too, because everyone who can see the page can open an attachment. If a later file fails, the error names the files that went: they are on the page, so do not run the command again as it is. In the text of a page an image is referred to by its file name: attach it first, then write the file name where Markdown wants the address of an image.
 
-**When to use:** Use to upload files to a page. Preview with --dry-run.
+**When to use:** Use to upload files to a page. Preview with --dry-run, which also shows which files replace an attachment; guard with --if-version.
 
 | Argument or option | Meaning |
 | --- | --- |
@@ -519,18 +726,71 @@ Uploads the files. A file whose name the page has already becomes a new version 
 | `--comment TEXT` | A comment stored with the attachments. |
 | `--minor` | A minor edit: nobody is notified. |
 | `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
+| `--if-version N` | Refuse (exit code 3) unless the attachment that the upload replaces is at this version now; 0 says that it must be new. One upload only. |
+| `--if-unchanged-since ISO` | Refuse (exit code 3) when an attachment that an upload replaces was saved in Confluence after this time (ISO 8601, for example the time you read it). Empty is an error. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu attach 123456 diagram.png --dry-run
 conflu attach 123456 diagram.png notes.pdf --comment 'October version'
+conflu attach 123456 diagram.png --if-version 2
 ```
 
 Changes data: **yes, preview with --dry-run**.
 
-JSON output: pageId, dryRun and files[]: path, name, size, action (uploaded or would upload), attachmentId, version.
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: pageId, dryRun, comment, minorEdit and files[]: path, name, size, action (uploaded or would upload), attachmentId, version, replaces (the id of the attachment that the file becomes a new version of), versionFrom, versionTo (null when the token may not read the attachments of the page, HTTP 403: the files are sent anyway, with a warning, unless a guard needs them; any other failure of that read stops the command).
+
+### `conflu update`
+
+Change the title or the body of a page.
+
+```text
+conflu update PAGE [--title TEXT] [--body TEXT] [--file FILE] [--format markdown|storage] [--append] [--prepend] [--message TEXT] [--if-version N] [--if-unchanged-since ISO] [--force] [--with-users] [--dry-run] [--json]
+```
+
+Changes the title, the body, or both. The text replaces the body, or is put behind it (--append) or in front of it (--prepend); the two keep everything that is on the page. Markdown (the default format) is converted to storage format. Replacing a body with Markdown is refused when the page holds what Markdown cannot say (macros, mentions, layouts, links between pages ...) unless you add --force; `conflu page PAGE --json` shows it under `dropped`. The new version number is the current one plus one, so Confluence itself refuses (exit code 3) when somebody saved in between.
+
+**When to use:** Use to change the title or the body of one existing page. Preview with --dry-run, guard with --if-version, and prefer --append to replacing the body.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `PAGE` | Page id, or the address of the page. |
+| `--title TEXT` | The new title. |
+| `--body TEXT` | The text, in the --format. A longer text is easier in a file: --file. |
+| `--file FILE` | Read the text from a file (`-` is standard input). |
+| `--format markdown|storage` | Format of the text: markdown, which is converted, or storage, which is sent as it is. Default: markdown. |
+| `--append` | Put the text behind the current body instead of replacing it. |
+| `--prepend` | Put the text in front of the current body instead of replacing it. |
+| `--message TEXT` | A message stored with the new version. |
+| `--if-version N` | Refuse (exit code 3) unless the page is at this version now. |
+| `--if-unchanged-since ISO` | Refuse (exit code 3) when the page changed in Confluence after this time (ISO 8601, for example the time you read it). It is a check just before the write, not a lock; the version number of an update is a second, atomic guard. |
+| `--force` | Replace a body with Markdown even though what Markdown cannot say is lost. |
+| `--with-users` | Show the request exactly as it is sent, with the people (mentions), e-mail addresses and personal links that the body holds. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu update 123456 --title 'Release notes 2026.10' --dry-run
+conflu update 123456 --file notes.md --append --message 'Added the October notes' --if-version 7
+conflu update 123456 --file page.xml --format storage --dry-run
+```
+
+- Text with quotes or $ is easiest in a file: --file notes.md. In Windows PowerShell 5.1 double quotes inside an argument are removed.
+- A change of the title alone does not touch the body.
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: action (updated or unchanged), dryRun, pageId, title and url (redacted unless --with-users; the address ends at the id of the page when the title holds an e-mail address), versionFrom, versionTo, lost[], labels[], payload (what is sent, but without the people and addresses that the body holds unless --with-users) and payloadRedacted (true when the printed payload differs from the request).
 
 ## Create and import
 
@@ -539,18 +799,18 @@ JSON output: pageId, dryRun and files[]: path, name, size, action (uploaded or w
 Create one page.
 
 ```text
-conflu create [--space KEY] --title TEXT [--parent PAGE] [--body TEXT] [--file FILE] [--format markdown|storage] [--labels a,b] [--dry-run] [--json]
+conflu create [--space KEY] --title TEXT [--parent ID] [--body TEXT] [--file FILE] [--format markdown|storage] [--labels a,b] [--dry-run] [--json]
 ```
 
-Creates a page in a space, below the home page or below --parent. The body is Markdown (converted to storage format) unless --format says storage; a page without a body is fine. The dry run proves that the space and the parent exist and that the title is free. A title is unique in a space: an existing one is refused (exit code 3).
+Creates a page in a space, below the home page or below --parent: a page, or a folder, a whiteboard, a database or a smart link of the same space. The body is Markdown (converted to storage format) unless --format says storage; a page without a body is fine. The dry run proves that the space and the parent exist and that the title is free, and names what the parent is (`parentType`). A title is unique in a space: an existing one is refused (exit code 3).
 
-**When to use:** Use to create one new page below a parent. Preview with --dry-run; a title must be unique in its space.
+**When to use:** Use to create one new page below a parent: a page, or a folder to publish below. Preview with --dry-run; a title must be unique in its space.
 
 | Argument or option | Meaning |
 | --- | --- |
 | `--space KEY` | Space key. Default: the current space. |
 | `--title TEXT` | The title of the page. |
-| `--parent PAGE` | The page to create it below (id or address). Default: below the home page of the space. |
+| `--parent ID` | The page, folder, whiteboard, database or smart link to create it below (id or address). Default: below the home page of the space. |
 | `--body TEXT` | The text, in the --format. A longer text is easier in a file: --file. |
 | `--file FILE` | Read the text from a file (`-` is standard input). |
 | `--format markdown|storage` | Format of the text: markdown, which is converted, or storage, which is sent as it is. Default: markdown. |
@@ -558,11 +818,13 @@ Creates a page in a space, below the home page or below --parent. The body is Ma
 | `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu create --space ENG --title 'Release notes 2026.10' --file notes.md --dry-run
-conflu create --title 'Meeting 2026-10-15' --parent 123456 --body 'Agenda: ...' --labels meeting
+conflu create --space ENG --title 'Meeting 2026-10-15' --parent 123456 --body 'Agenda: ...' --labels meeting
+conflu create --space ENG --title 'Getting started' --parent 7001 --file start.md --dry-run    # below a folder
 ```
 
 - Text with quotes or $ is easiest in a file: --file notes.md. In Windows PowerShell 5.1 double quotes inside an argument are removed.
@@ -570,17 +832,19 @@ conflu create --title 'Meeting 2026-10-15' --parent 123456 --body 'Agenda: ...' 
 
 Changes data: **yes, preview with --dry-run**.
 
-JSON output: action (created), dryRun, pageId (null in a dry run), title, url, versionTo, labels[] and payload (exactly what is sent).
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: action (created), dryRun, pageId (null in a dry run), title, url, versionTo, labels[], parentId, parentType (page, folder, whiteboard, database or embed; null without --parent), parent{id,type,title} (null without --parent) and payload (exactly what is sent).
 
 ### `conflu import-md`
 
 Create or update a page from a Markdown file.
 
 ```text
-conflu import-md FILE.md [--space KEY] [--parent PAGE] [--force] [--dry-run] [--json]
+conflu import-md FILE.md [--space KEY] [--parent ID] [--force] [--dry-run] [--json]
 ```
 
-Reads a Markdown file with an optional front matter (title, space, parent, page_id, labels, message) and publishes it. With `page_id` it updates that page; otherwise it looks for a page with the same title in the space and updates it, or creates the page. The title comes from the front matter, else from a first `# Heading`, which is then not repeated in the body. The space and parent of the front matter win over --space and --parent, which win over the current space. Labels are added, never removed. `export` writes files that this command reads again.
+Reads a Markdown file with an optional front matter (title, space, parent, page_id, labels, message) and publishes it. With `page_id` it updates that page; otherwise it looks for a page with the same title in the space and updates it, or creates the page. The title comes from the front matter, else from a first `# Heading`, which is then not repeated in the body. The space and parent of the front matter win over --space and --parent, which win over the current space. The parent is the id or address of a page, or of a folder, whiteboard, database or smart link (`export` writes the id of whatever the parent is). Labels are added, never removed. `export` writes files that this command reads again.
 
 **When to use:** Use to publish one Markdown file as a page, or to update the page that it names. Preview with --dry-run.
 
@@ -588,11 +852,12 @@ Reads a Markdown file with an optional front matter (title, space, parent, page_
 | --- | --- |
 | `FILE.md` | The Markdown file. |
 | `--space KEY` | Space key. Default: the current space. |
-| `--parent PAGE` | The page to create it below (id or address). Default: below the home page of the space. |
+| `--parent ID` | The page, folder, whiteboard, database or smart link to create it below (id or address). Default: below the home page of the space. |
 | `--force` | Replace the body of an existing page even though what Markdown cannot say (macros, mentions, layouts ...) is lost. |
 | `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -607,14 +872,16 @@ conflu import-md notes.md --space ENG --parent 123456
 
 Changes data: **yes, preview with --dry-run**.
 
-JSON output: file, action (created, updated or unchanged; a label that is new makes it updated), pageId, title, url, dryRun, message, lost[], labels[] (added, or in a dry run to be added) and payload.
+REST API: v2 (/wiki/api/v2).
+
+JSON output: file, action (created, updated or unchanged; a label that is new makes it updated), pageId, title, url, dryRun, message, lost[], labels[] (added, or in a dry run to be added), parentType and parent{id,type,title} (of a page that is created below a parent; else null) and payload.
 
 ### `conflu import-md-dir`
 
 Publish all Markdown files of a folder.
 
 ```text
-conflu import-md-dir DIR [--space KEY] [--parent PAGE] [--continue-on-error] [--force] [--dry-run] [--json]
+conflu import-md-dir DIR [--space KEY] [--parent ID] [--continue-on-error] [--force] [--dry-run] [--json]
 ```
 
 Runs `import-md` for every *.md file of the folder (not its subfolders) in the order of the names. It stops at the first failure unless --continue-on-error is given, and then exits with the code of the first failure. It is the way from a folder to Confluence; `export` is the way back. There is no `sync` command, and neither direction looks at what the other changed meanwhile.
@@ -625,12 +892,13 @@ Runs `import-md` for every *.md file of the folder (not its subfolders) in the o
 | --- | --- |
 | `DIR` | The folder. |
 | `--space KEY` | Space key. Default: the current space. |
-| `--parent PAGE` | The page to create it below (id or address). Default: below the home page of the space. |
+| `--parent ID` | The page, folder, whiteboard, database or smart link to create it below (id or address). Default: below the home page of the space. |
 | `--continue-on-error` | Go on with the next file after a failure. |
 | `--force` | Replace the body of an existing page even though what Markdown cannot say (macros, mentions, layouts ...) is lost. |
 | `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -643,68 +911,1006 @@ conflu import-md-dir docs/confluence --space ENG --continue-on-error
 
 Changes data: **yes, preview with --dry-run**.
 
+REST API: v2 (/wiki/api/v2).
+
 JSON output: dryRun, created, updated, unchanged, failed and outcomes[] (the output of import-md for each file).
 
+## Structure
+
+### `conflu folder`
+
+Show one folder.
+
+```text
+conflu folder FOLDER [--children] [--ancestors] [--with-users] [--limit N] [--cursor TOKEN] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Shows the title, space, status, version, position and parent of a folder; a folder has no text of its own. People are hidden unless you add --with-users. Pages go below a folder with `create --parent`; `tree` shows everything below it.
+
+**When to use:** Use to see a folder, what sits directly below it (--children) and the path to it (--ancestors). A folder id is in its address; no call lists the folders of a space.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `FOLDER` | Id of the folder, or its address as copied from the browser. |
+| `--children` | List what sits directly below it, in the order of the tree. |
+| `--ancestors` | Also show every ancestor, from the top of the space down to the parent. |
+| `--with-users` | Show people: the author, the owner and who saved the version, and for a database the people in its cells. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--limit N` | Items per page (1 to 250). Default: 25. |
+| `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor (with the same --limit). |
+| `--all` | Fetch every page of the list instead of one (ignores --limit and --cursor). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu folder 7001
+conflu folder 7001 --children --json
+conflu folder 7001 --children --select id,type,title --format tsv    # the children as flat rows
+conflu folder 7001 --ancestors
+```
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: id, type, title, status, spaceId, spaceKey, parentId, parentType, position, url, version{number,created,message,minorEdit,author}, created, updated, author and owner (null unless --with-users), ancestors[]: id, type, title (with --ancestors); in a personal space spaceKey and the key in url are [hidden] unless --with-users, children[]: id, type, title, status, position (with --children); with a list also count, nextCursor (null on the last page), truncated and the list, of which --select keeps some keys.
+
+### `conflu whiteboard`
+
+Show one whiteboard.
+
+```text
+conflu whiteboard WHITEBOARD [--children] [--ancestors] [--with-users] [--limit N] [--cursor TOKEN] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Shows the title, space, status, version, position and parent of a whiteboard. People are hidden unless you add --with-users.
+
+**When to use:** Use to see where a whiteboard sits and what is below it. Its drawing cannot be read: the REST API has no call that returns the content of a whiteboard.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `WHITEBOARD` | Id of the whiteboard, or its address as copied from the browser. |
+| `--children` | List what sits directly below it, in the order of the tree. |
+| `--ancestors` | Also show every ancestor, from the top of the space down to the parent. |
+| `--with-users` | Show people: the author, the owner and who saved the version, and for a database the people in its cells. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--limit N` | Items per page (1 to 250). Default: 25. |
+| `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor (with the same --limit). |
+| `--all` | Fetch every page of the list instead of one (ignores --limit and --cursor). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu whiteboard 7021
+conflu whiteboard 7021 --ancestors --json
+```
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: id, type, title, status, spaceId, spaceKey, parentId, parentType, position, url, version{number,created,message,minorEdit,author}, created, updated, author and owner (null unless --with-users), ancestors[]: id, type, title (with --ancestors); in a personal space spaceKey and the key in url are [hidden] unless --with-users, children[]: id, type, title, status, position (with --children); with a list also count, nextCursor (null on the last page), truncated and the list, of which --select keeps some keys.
+
+### `conflu database`
+
+Show one database.
+
+```text
+conflu database DATABASE [--children] [--fields] [--views] [--entries] [--ancestors] [--with-users] [--limit N] [--cursor TOKEN] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Shows the title, space, status, version, position and parent of a database. --entries gives every entry with the value of each field, keyed by the id of the field, and `columns` that name the fields. Text in a cell has e-mail addresses and personal links redacted, and the people in a cell are `[hidden]` unless you add --with-users.
+
+**When to use:** Use to see a database and, one list at a time, its --fields, --views or --entries. Atlassian marks the API for the entries as experimental.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `DATABASE` | Id of the database, or its address as copied from the browser. |
+| `--children` | List what sits directly below it, in the order of the tree. |
+| `--fields` | List the fields of the database. |
+| `--views` | List the views of the database. |
+| `--entries` | List the entries of the database, with the value of every field. |
+| `--ancestors` | Also show every ancestor, from the top of the space down to the parent. |
+| `--with-users` | Show people: the author, the owner and who saved the version, and for a database the people in its cells. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--limit N` | Items per page (1 to 250). Default: 25. |
+| `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor (with the same --limit). |
+| `--all` | Fetch every page of the list instead of one (ignores --limit and --cursor). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu database 7041
+conflu database 7041 --fields
+conflu database 7041 --entries --limit 50 --json
+conflu database 7041 --entries --all --select id,values --format tsv    # all entries as flat rows
+```
+
+- The cursor of a list belongs to the --limit that made it: continue with the same one, or use --all.
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: id, type, title, status, spaceId, spaceKey, parentId, parentType, position, url, version{number,created,message,minorEdit,author}, created, updated, author and owner (null unless --with-users), ancestors[]: id, type, title (with --ancestors); in a personal space spaceKey and the key in url are [hidden] unless --with-users, children[]: id, type, title, status, position (with --children), fields[]: id, name, type, description, options[] (with --fields), views[]: id, name, type (with --views), columns[]: id, name, type and entries[]: id, values{field id: value} (with --entries); with a list also count, nextCursor (null on the last page), truncated and the list, of which --select keeps some keys.
+
+### `conflu smartlink`
+
+Show one smart link.
+
+```text
+conflu smartlink SMARTLINK [--children] [--ancestors] [--with-users] [--limit N] [--cursor TOKEN] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Shows the title, space, status, version, position and parent of a smart link, and its address (`embedUrl`). People and personal links are hidden unless you add --with-users.
+
+**When to use:** Use to see where a smart link sits and the address it shows.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `SMARTLINK` | Id of the smart link, or its address as copied from the browser. |
+| `--children` | List what sits directly below it, in the order of the tree. |
+| `--ancestors` | Also show every ancestor, from the top of the space down to the parent. |
+| `--with-users` | Show people: the author, the owner and who saved the version, and for a database the people in its cells. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--limit N` | Items per page (1 to 250). Default: 25. |
+| `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor (with the same --limit). |
+| `--all` | Fetch every page of the list instead of one (ignores --limit and --cursor). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu smartlink 7061
+conflu smartlink 7061 --json
+```
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: id, type, title, status, spaceId, spaceKey, parentId, parentType, position, url, version{number,created,message,minorEdit,author}, created, updated, author and owner (null unless --with-users), ancestors[]: id, type, title (with --ancestors); in a personal space spaceKey and the key in url are [hidden] unless --with-users, embedUrl (null when it shows no address), children[]: id, type, title, status, position (with --children); with a list also count, nextCursor (null on the last page), truncated and the list, of which --select keeps some keys.
+
+### `conflu folder-create`
+
+Create a folder.
+
+```text
+conflu folder-create --title TEXT [--space KEY] [--parent ID] [--dry-run] [--json]
+```
+
+Creates a folder in a space: below --parent (a page, folder, whiteboard, database or smart link of that space), or with no parent named. Confluence does not forbid two folders with one title, and no call lists the folders of a space, so the dry run cannot say whether the title is taken. The new id is printed; it is what `create --parent` and `import-md --parent` take. A folder is never renamed, moved or deleted by this command.
+
+**When to use:** Use to make a folder to publish pages below (`create --parent FOLDER`). Preview with --dry-run; a title need not be unique.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `--title TEXT` | The title: one line, at most 255 characters. |
+| `--space KEY` | Space key. Default: the current space. |
+| `--parent ID` | The page, folder, whiteboard, database or smart link of the space to create it below (id or address). Default: none is named. |
+| `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu folder-create --title Guides --space ENG --dry-run
+conflu folder-create --space ENG --title Runbooks --parent 7001 --json
+```
+
+- Read the id of the new folder from `--json` (`folderId`); never guess it.
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: action (created), dryRun, folderId (null in a dry run), title, spaceKey, url (null in a dry run), parentId, parentType, parent{id,type,title} (null without --parent) and payload (exactly what is sent).
+
+### `conflu smartlink-create`
+
+Create a smart link.
+
+```text
+conflu smartlink-create --url URL --title TEXT [--space KEY] [--parent ID] [--dry-run] [--json]
+```
+
+Creates a smart link in a space: below --parent (a page, folder, whiteboard, database or smart link of that space), or with no parent named. The address must be http or https without a user name or password, at most 2048 characters, and without a blank or a control character; it is shown as it was given. Confluence does not forbid two smart links with one title. The new id is printed. A smart link is never renamed, moved or deleted by this command.
+
+**When to use:** Use to put a smart link, a link to an address, into the tree of a space. Preview with --dry-run.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `--url URL` | The address that the smart link shows: http or https, at most 2048 characters. |
+| `--title TEXT` | The title: one line, at most 255 characters. |
+| `--space KEY` | Space key. Default: the current space. |
+| `--parent ID` | The page, folder, whiteboard, database or smart link of the space to create it below (id or address). Default: none is named. |
+| `--dry-run` | Show what would be sent and check that the page exists. Sends nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu smartlink-create --url https://example.com/roadmap --title Roadmap --space ENG --dry-run
+conflu smartlink-create --url https://example.com/roadmap --title Roadmap --space ENG --parent 7001 --json
+```
+
+- Read the id of the new smart link from `--json` (`smartlinkId`); never guess it.
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: action (created), dryRun, smartlinkId (null in a dry run), title, spaceKey, url (null in a dry run), embedUrl, parentId, parentType, parent{id,type,title} (null without --parent) and payload (exactly what is sent).
+
+## Blog posts
+
+### `conflu blogposts`
+
+List the blog posts of a space.
+
+```text
+conflu blogposts [--space KEY] [--title TEXT] [--status current|trashed|deleted] [--sort id|created-date|modified-date] [--desc] [--limit N] [--cursor TOKEN] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Lists the blog posts of the current space (`conflu use`) or of the space given with --space; without either, those of the whole site. A blog post is not a page: it has no parent, and it is not in `pages`. Blog posts can share a title. The ids are what `blogpost` takes.
+
+**When to use:** Use to list the blog posts of a space with their ids, versions and dates, or to look one up by its exact title (--title). Read one with `blogpost`; to look for words inside blog posts use `search --type blogpost`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `--space KEY` | Space key. Default: the current space. |
+| `--title TEXT` | Only the blog posts with exactly this title. |
+| `--status current|trashed|deleted` | Status of the blog posts (a blog post is never archived). Default: current. |
+| `--sort id|created-date|modified-date` | Order of the list. |
+| `--desc` | Sort downwards (needs --sort). |
+| `--limit N` | Items per page (1 to 250). Default: 25. |
+| `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor. |
+| `--all` | Fetch every blog post of the list instead of one part of it (ignores --limit and --cursor). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu blogposts --space ENG --sort created-date --desc --limit 10    # the latest ones
+conflu blogposts --space ENG --title 'Release 2026.10 is out' --json
+conflu blogposts --space ENG --all --select id,title,created --format tsv    # only these columns, as TSV for a script or a spreadsheet
+```
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: space (key, [hidden] for a personal space, or null), count, nextCursor (null on the last page), truncated and blogposts[]: id, title, status, spaceId, version, created, updated, url; with --select only those (dotted) keys of every blog post.
+
+### `conflu blogpost`
+
+Show one blog post.
+
+```text
+conflu blogpost BLOGPOST [--format markdown|text|storage] [--outline] [--section TITLE|N] [--max-chars N] [--no-body] [--body-only] [--comments] [--with-users] [--raw] [--out FILE] [--force] [--json]
+```
+
+Shows the title, space, version, labels and the body, as `page` does. The body is converted from Confluence's storage format to Markdown (or plain text; with --format storage it is shown as Confluence keeps it). People and mentions are hidden unless you add --with-users. The blog post can be given by its id or by the address as copied from the browser (.../blog/2026/10/15/123456/Title). --comments adds the footer and the inline comments with their replies.
+
+**When to use:** Use to read a blog post whose id or address you know (`blogposts` finds it). Start with --outline and read only the --section you need. For a page use `page`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `BLOGPOST` | Blog post id, or the address of the blog post as copied from the browser. |
+| `--format markdown|text|storage` | Format of the body. Default: markdown. |
+| `--outline` | Show the headings with the size of each section, and not the body. Then read one part with --section. |
+| `--section TITLE|N` | Show only this section: the text of its heading (a part of it is enough when it is unique) or its number from --outline. |
+| `--max-chars N` | Cut the body to about N characters, at the end of a paragraph; the answer says that it was cut. |
+| `--no-body` | Leave the body out and show only the properties of the blog post. |
+| `--body-only` | Print the body and nothing else, for a file or a pipe. Wins over --json. |
+| `--comments` | Also show the comments (footer and inline) with their replies. |
+| `--with-users` | Show people (author, who saved the version, comment authors) and the account ids of mentions. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--raw` | Print Confluence's own JSON for the blog post (people removed unless --with-users). Not with --comments, --outline, --section or --max-chars, which are not in it. |
+| `--out FILE` | Write the body to this file as UTF-8 instead of printing it (Windows PowerShell 5.1 damages what `>` saves). One line says what was written. Changes nothing in Confluence. |
+| `--force` | Replace the file --out names if it exists (never the settings of the CLI). |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu blogpost 123456    # the blog post as Markdown
+conflu blogpost https://example.atlassian.net/wiki/spaces/ENG/blog/2026/10/15/123456/Release+2026.10 --outline
+conflu blogpost 123456 --comments --json    # with its comments, as JSON for a script or an agent
+conflu blogpost 123456 --section 'Known issues' --max-chars 3000    # only that section, cut if it is longer
+conflu blogpost 123456 --format storage --body-only --out post.xml    # only the source, into a file that the program writes as UTF-8
+```
+
+- The Markdown is a reading copy: macros, layouts, mentions and the like cannot be shown in it. Both the text and the JSON name what is missing (`dropped`).
+- Storage format read without --with-users has the account ids of mentions blanked. `blogpost-update` refuses such a body.
+- To save the body, use --body-only --out FILE and not `>`: the program then writes the file itself, as UTF-8 without a byte-order mark and with plain line ends, and says so in one line (`Wrote N bytes to FILE`; `file` and `bytes` with --json). Windows PowerShell 5.1 re-encodes what `>` saves and damages every character that is not ASCII. A file that exists is not replaced without --force, and never the settings file of the CLI. It writes a file on this computer and changes nothing in Confluence.
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: id, title, status, spaceId, spaceKey, url, version{number,created,message,minorEdit,author}, created, updated, labels[], author (null unless --with-users), body{format,value,dropped[],section,truncated,totalChars} (null with --no-body or --outline), outline[{index,level,title,chars}] (with --outline), comments[] (with --comments); with --body-only --out: file, bytes.
+
+### `conflu blogpost-create`
+
+Create one blog post.
+
+```text
+conflu blogpost-create [--space KEY] --title TEXT [--body TEXT] [--file FILE] [--format markdown|storage] [--labels a,b] [--dry-run] [--json]
+```
+
+Creates a blog post in a space. The body is Markdown (converted to storage format) unless --format says storage; a blog post without a body is fine. The dry run proves that the space exists and shows the payload. Unlike a page, a blog post may have the same title as another one: nothing is checked, and when Confluence refuses a title all the same its message is shown (exit code 6). The labels are added with a second request; when that fails the blog post is there and the error says so.
+
+**When to use:** Use to publish a new blog post in a space. Preview with --dry-run. Blog posts can share a title, so the CLI does not look for one that is there already.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `--space KEY` | Space key. Default: the current space. |
+| `--title TEXT` | The title of the blog post. |
+| `--body TEXT` | The text, in the --format. A longer text is easier in a file: --file. |
+| `--file FILE` | Read the text from a file (`-` is standard input). |
+| `--format markdown|storage` | Format of the text: markdown, which is converted, or storage, which is sent as it is. Default: markdown. |
+| `--labels a,b` | Labels to put on the blog post, comma separated. |
+| `--dry-run` | Show what would be sent and check that the space (or the blog post) exists. Sends nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu blogpost-create --space ENG --title 'Release 2026.10 is out' --file post.md --dry-run
+conflu blogpost-create --title 'Weekly update' --body 'Nothing to report.' --labels news,weekly
+```
+
+- Text with quotes or $ is easiest in a file: --file notes.md. In Windows PowerShell 5.1 double quotes inside an argument are removed.
+- Read the id of the new blog post from `--json` (`blogpostId`); never guess it.
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: action (created), dryRun, blogpostId (null in a dry run), title, url, versionFrom (null), versionTo, lost[], labels[] and payload (exactly what is sent).
+
+### `conflu blogpost-update`
+
+Change the title or the body of a blog post.
+
+```text
+conflu blogpost-update BLOGPOST [--title TEXT] [--body TEXT] [--file FILE] [--format markdown|storage] [--append] [--prepend] [--message TEXT] [--if-version N] [--if-unchanged-since ISO] [--force] [--with-users] [--dry-run] [--json]
+```
+
+Changes the title, the body, or both, as `update` does for a page. The text replaces the body, or is put behind it (--append) or in front of it (--prepend); the two keep everything that is there. Markdown (the default format) is converted to storage format. Replacing a body with Markdown is refused when the blog post holds what Markdown cannot say (macros, mentions, layouts ...) unless you add --force; `conflu blogpost ID --json` shows it under `dropped`. The new version number is the current one plus one, so Confluence itself refuses (exit code 3) when somebody saved in between. A change of the title alone sends the body along unchanged: the API has no call for the title only.
+
+**When to use:** Use to change the title or the body of one existing blog post. Preview with --dry-run, guard with --if-version, and prefer --append to replacing the body.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `BLOGPOST` | Blog post id, or the address of the blog post. |
+| `--title TEXT` | The new title. |
+| `--body TEXT` | The text, in the --format. A longer text is easier in a file: --file. |
+| `--file FILE` | Read the text from a file (`-` is standard input). |
+| `--format markdown|storage` | Format of the text: markdown, which is converted, or storage, which is sent as it is. Default: markdown. |
+| `--append` | Put the text behind the current body instead of replacing it. |
+| `--prepend` | Put the text in front of the current body instead of replacing it. |
+| `--message TEXT` | A message stored with the new version. |
+| `--if-version N` | Refuse (exit code 3) unless the blog post is at this version now. |
+| `--if-unchanged-since ISO` | Refuse (exit code 3) when the blog post changed in Confluence after this time (ISO 8601, for example the time you read it). It is a check just before the write, not a lock; the version number of an update is a second, atomic guard. |
+| `--force` | Replace a body with Markdown even though what Markdown cannot say is lost. |
+| `--with-users` | Show the payload exactly as it is sent, with the people and addresses that the body holds, and the title as it is. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--dry-run` | Show what would be sent and check that the space (or the blog post) exists. Sends nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu blogpost-update 123456 --title 'Release 2026.10 is out!' --dry-run
+conflu blogpost-update 123456 --file addendum.md --append --message 'Added the known issues' --if-version 3
+conflu blogpost-update 123456 --file post.xml --format storage --dry-run
+```
+
+- Text with quotes or $ is easiest in a file: --file notes.md. In Windows PowerShell 5.1 double quotes inside an argument are removed.
+- The `payload` holds the whole body, also for a change of the title, because the API has no call for the title only. Without --with-users it is a copy without the people and addresses that the body holds (`payloadRedacted` is then true); the request that is sent has them, so mentions survive.
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: action (updated or unchanged), dryRun, blogpostId, title, url, versionFrom, versionTo, lost[], labels[], payload (what is sent; without --with-users a copy that does not name the people in the body) and payloadRedacted (true when the payload shown differs from the request).
+
+## Access and people
+
+### `conflu permissions`
+
+Show what your account may do with content or in a space.
+
+```text
+conflu permissions [ID] [--space KEY] [--only NAME,NAME] [--json]
+```
+
+Asks Confluence which operations the account of the token is allowed on a page, blog post, folder, whiteboard, database, smart link, comment or attachment (give its id or address; what it is gets looked up), or with --space (or the current space) in a space, and what each operation is done to. `can` answers read, update and delete with yes or no, and every other operation that is allowed; --only names the operations you ask about and keeps those (an operation that is not allowed is `no`). Not about other people.
+
+**When to use:** Use before a change to see whether this account may do it (update, delete, create ...), instead of reading the refusal. It answers for the account of the token only; who else may see or edit content is `restrictions`, and who may use a space is `space-access`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `ID` | Id of a page, blog post, folder, whiteboard, database, smart link, comment or attachment, or its address as copied from the browser. Leave it out to ask about a space. |
+| `--space KEY` | Ask about this space instead of content. Without an ID and without --space the current space (`conflu use`) is used. |
+| `--only NAME,NAME` | Only these operations, comma separated, for example update,delete: the answer says yes or no for each. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu permissions 123456    # everything this account may do with a page
+conflu permissions 123456 --only update,delete    # yes or no for each
+conflu permissions --space ENG --json    # what this account may do in a space, as JSON
+```
+
+- Read only: nothing here changes who may see or edit content. That is done in the web interface, or with `conflu api ... --write`, which says what it sends and previews it with --dry-run.
+- `create` may be allowed for a comment or an attachment and not for a page: `operations` and the column ON say what each operation is done to.
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: target ({id, type, key, title}: key and title only for a space; the title of content is not read), operations[] ({operation, targetType}, in a fixed order; only those named by --only when it is given) and can (one yes or no, as true or false, for each of read, update and delete and the other operations that are allowed; those named by --only when it is given).
+
+### `conflu restrictions`
+
+Show the restriction on content and who is granted access.
+
+```text
+conflu restrictions ID [--with-users] [--limit N] [--cursor TOKEN] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Shows the restriction that is set on the content itself and its direct permissions. The counts of users and groups per operation (read, update) are always shown; the account ids of the users, the ids of the groups and who set the restriction only with --with-users, one piece at a time (--limit, --cursor) or all of it (--all). A restriction that a parent page or folder sets is not in these calls, so OPEN does not mean that everybody may read it. A smart link, comment or attachment has no restriction of its own: the command says so.
+
+**When to use:** Use to see whether a page, blog post, folder, whiteboard or database is restricted (OPEN, EDIT_RESTRICTED or VIEW_RESTRICTED) and how many users and groups may read or update it. Who they are is shown only with --with-users. Not for what this account may do: that is `permissions`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `ID` | Id of a page, blog post, folder, whiteboard or database, or its address as copied from the browser. |
+| `--with-users` | Show who: the account ids of users and the ids of groups, and who set the restriction. Refused when CONFLUENCE_HIDE_USERS=true. Without it only the counts are shown. |
+| `--limit N` | With --with-users: principals in a piece of the list (1 to 250, default 25). |
+| `--cursor TOKEN` | With --with-users: continue after the end of the previous answer: pass its nextCursor. |
+| `--all` | With --with-users: show every principal instead of one piece (ignores --limit and --cursor). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu restrictions 123456    # the state and how many users and groups hold read and update
+conflu restrictions 123456 --with-users --json    # and who they are
+conflu restrictions 123456 --with-users --all --select operation,principalType,principalId --format tsv    # the principals as rows
+```
+
+- Read only: nothing here changes who may see or edit content. That is done in the web interface, or with `conflu api ... --write`, which says what it sends and previews it with --dry-run.
+- `conflu users lookup ACCOUNT_ID --with-users` says who an account id is. A group is shown by its id: naming it would need a call that v2 does not have.
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: target ({id, type, key, title}), state (OPEN, EDIT_RESTRICTED or VIEW_RESTRICTED), meaning, createdAt and createdBy (null for OPEN; createdBy only with --with-users), counts ({read: {user, group}, update: {user, group}}, of all the direct permissions), total, usersShown, count (principals in this answer; null without --with-users), nextCursor, truncated (the lists were cut and the counts are of what was read), permissions[] ({operation, principalType, principalId, createdAt, createdBy}; null without --with-users; with --select only those keys) and notes[].
+
+### `conflu space-access`
+
+Show who may use a space.
+
+```text
+conflu space-access [SPACE] [--with-users] [--limit N] [--cursor TOKEN] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Reads the role mode of the site (PRE_ROLES: permission assignments, ROLES: role assignments, ROLES_TRANSITION: both), then what that mode needs: who may do what in the space, or who has which role (by the name of the role). The counts of users, groups and roles or access classes are always shown; the account ids, the ids of groups and the roles they hold only with --with-users, one piece at a time (--limit, --cursor) or all of it (--all). A site without space roles has permission assignments only.
+
+**When to use:** Use to see how a space gives access (permissions or roles) and how many users, groups and roles hold what. Who they are is shown only with --with-users. Not for what this account may do: that is `permissions`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `SPACE` | Key of the space. Default: the current space (`conflu use`). |
+| `--with-users` | Show who: the account ids of users and the ids of groups (and the roles and access classes), with what each holds. Refused when CONFLUENCE_HIDE_USERS=true. Without it only the counts are shown. |
+| `--limit N` | With --with-users: principals in a piece of the list (1 to 250, default 25). |
+| `--cursor TOKEN` | With --with-users: continue after the end of the previous answer: pass its nextCursor. |
+| `--all` | With --with-users: show every principal instead of one piece (ignores --limit and --cursor). |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu space-access ENG    # the role mode and how many users, groups and roles hold what
+conflu space-access ENG --with-users --all --json    # and who they are
+conflu space-access ENG --with-users --select principalType,principalId,roleName --format md    # the principals as a Markdown table
+```
+
+- Read only: nothing here changes who may see or edit content. That is done in the web interface, or with `conflu api ... --write`, which says what it sends and previews it with --dry-run.
+- An access class is a kind of audience that is no single person (for example everybody who has an account); it is listed with the principals, so that one switch decides.
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: target ({id, type: space, key, title}), mode (null when the site does not report one), models (permissions, roles: what was read), permissionTotal and permissionCounts[] ({operation, targetType, user, group, role}), roleTotal and roleCounts[] ({roleId, name, type, user, group, accessClass}) (each null when its model was not read), usersShown, total, count (principals in this answer; null without --with-users), nextCursor, truncated, principals[] ({model, principalType, principalId, operation, targetType, roleId, roleName}; null without --with-users; with --select only those keys) and notes[].
+
+### `conflu watching`
+
+Show whether you watch a page or a space.
+
+```text
+conflu watching [PAGE] [--space KEY] [--json]
+```
+
+Says whether the account of the token watches a page (or a blog post or other content, by its id) or a space. Who else watches is not shown, and nothing is changed. Without a page and without --space the current space of `conflu use` is the one.
+
+**When to use:** Use to see whether you get notifications for a page, a blog post or a space. It shows your own watch only. To start or stop watching use `watch`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `PAGE` | Page id, or the address of the page; for a blog post or other content its id. Leave it out to name a space with --space. |
+| `--space KEY` | Show the watch of this space (its key) instead of a page's. Without a page and without it the current space is used. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu watching 123456
+conflu watching --space ENG    # a space, by its key
+conflu watching 123456 --json    # for a script or an agent
+```
+
+- Only your own watch is read: no option names another person. Atlassian's API v2 has no call for watches, so the v1 calls are used (see `conflu how-to compatibility`).
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: target{id,type,key,title}: type is what Confluence calls the content (page, blogpost, folder ...) or space; key and title are set for a space only, as `conflu spaces` prints them: the title redacted like every title, and for a personal space (it is named after its owner) the key [hidden] and the title [personal space]; watching (true or false).
+
+### `conflu watch`
+
+Start or stop watching a page or a space.
+
+```text
+conflu watch [PAGE] [--space KEY] [--remove] [--dry-run] [--json]
+```
+
+Starts watching a page (or a blog post or other content, by its id) or a space, or with --remove stops, for the account of the token only: there is no option to name another person. The status is read first, so a watch that is as asked already is left alone (`unchanged`, nothing is sent), and it is read again after the change. If that second read fails, the change is still reported as made (exit code 0, `confirmed` is null) and a warning says how to check.
+
+**When to use:** Use to get notifications for a page, a blog post or a space (or with --remove to stop getting them). It changes your own watch only, never somebody else's. Preview with --dry-run. To see whether you watch it use `watching`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `PAGE` | Page id, or the address of the page; for a blog post or other content its id. Leave it out to name a space with --space. |
+| `--space KEY` | Watch this space (its key) instead of a page. A change names what it changes: the current space of `conflu use` is not assumed. |
+| `--remove` | Stop watching instead of starting. It takes your own watch off and nothing else: no content, and nobody else's watch. |
+| `--dry-run` | Show what would be sent and read the watch status. Sends nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu watch 123456 --dry-run
+conflu watch 123456
+conflu watch --space ENG    # a space, by its key
+conflu watch 123456 --remove    # stop watching
+conflu watch 123456 --json
+```
+
+- The watch is a notification setting of your account: `--remove` removes that and no content, and it cannot remove anybody else's watch. It is the only command, besides `conflu label --remove`, that sends a DELETE.
+- Atlassian's API v2 has no call for watches, so the v1 calls are used (see `conflu how-to compatibility`).
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: action (watched, unwatched or unchanged), dryRun, target{id,type,key,title}: type is what Confluence calls the content (page, blogpost, folder ...) or space; key and title are set for a space only, as `conflu spaces` prints them: the title redacted like every title, and for a personal space (it is named after its owner) the key [hidden] and the title [personal space], wasWatching, watching (as Confluence says after the change; null when it could not be read back; in a dry run and when unchanged the state as it is), confirmed (the status read back is the one asked for; null when nothing was written or the read-back failed), call (the REST call that is sent, or in a dry run would be, as the compatibility page writes it; null when unchanged) and message (null unless the change could not be confirmed).
+
+### `conflu users`
+
+Search for people by name, or look up account ids.
+
+```text
+conflu users search|lookup TEXT... [--limit N] [--start N] [--all] [--with-users] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+search shows the people whose name holds the text (the older API's user search; a name with a double quote or a backslash stays a text). lookup shows the people behind up to 250 account ids (the bulk lookup of API v2); an id that Confluence does not describe is left out and listed as notFound. Both print the account id, the display name, the e-mail address when Confluence returns one, and the account type.
+
+**When to use:** Use to find the account id of a person by name (action search), or to see who is behind the account ids that other commands print (action lookup). Both show people, so both need --with-users and are refused when CONFLUENCE_HIDE_USERS=true: this is the one command where people are the point.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `search|lookup` | search: people by (part of) a name. lookup: the people behind account ids. |
+| `TEXT` | With search the name, or part of it; several words need no quotes. With lookup the account ids, separated by blanks or commas, at most 250. `@FILE` reads it from a file, `-` from standard input. |
+| `--limit N` | With search: people per request (1 to 250, default 25; Confluence may allow fewer). |
+| `--start N` | With search: index of the first person (default 0). |
+| `--all` | With search: fetch every person instead of one request (ignores --limit and --start). |
+| `--with-users` | Show the people. Without it the command is refused; it is refused when CONFLUENCE_HIDE_USERS=true as well. |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu users search alex --with-users
+conflu users search Alex Example --with-users --json    # several words need no quotes
+conflu users search '@name.txt' --with-users    # the name in a file: the form that survives Windows PowerShell 5.1
+conflu users search alex --with-users --all --select accountId,displayName --format tsv
+conflu users lookup 5b10ac8d82e05b22cc7d4ef5 --with-users
+conflu users lookup 5b10ac8d82e05b22cc7d4ef5 557058:00000000-0000-4000-8000-000000000001 --with-users --json
+```
+
+- The name goes into a CQL string (user.fullname ~ "...") with its double quotes and backslashes escaped, so that whatever it holds stays a text.
+- The e-mail address is shown only when Confluence returns one: it depends on the privacy setting of each person. A person who hides their name shows the public name.
+- An account id that is not described is not an error: Confluence leaves it out, and `notFound` lists it. Without --with-users nothing is sent at all.
+- The search is the v1 call GET /rest/api/search/user (API v2 has no search for people); the lookup is the v2 call POST /api/v2/users-bulk.
+- In Windows PowerShell 5.1 a name with double quotes arrives broken, because PowerShell removes them inside an argument: put it in a file and pass it in single quotes, '@name.txt' (a bare @name is splatting in PowerShell), or pipe it in with `-`.
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: search: query (the words), cql (what was sent), total (people that fit), count, start, nextStart (null on the last request and with --all), truncated and users[]. lookup: requested (different ids asked for), count, notFound[] (ids Confluence did not describe) and users[]. users[]: accountId, displayName, email, accountType; null for what Confluence does not say; with --select only those (dotted) keys of every person.
+
+## Tasks and properties
+
+### `conflu tasks`
+
+List the tasks that are written into pages.
+
+```text
+conflu tasks [--space KEY] [--page ID] [--task ID] [--status incomplete|complete] [--mine] [--created-by-me] [--due-before DATE] [--due-after DATE] [--limit N] [--cursor TOKEN] [--all] [--with-users] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Lists the tasks of the whole site, or narrows them: to one space (--space), one page or blog post (--page), the tasks with some ids (--task, once for each: the way to read one task), a status, the tasks that are assigned to you (--mine) or that you created (--created-by-me), and a range of due days. Every filter that is given must hold. The text of a task is shown as plain text, without the people in it. Who created, was assigned and completed a task is shown only with --with-users. A task without a due date is in no range of due days. An id that no task has, or that the other filters do not let through, is not in the list: that is no error.
+
+**When to use:** Use to find the tasks (checkboxes) of pages and blog posts: your open ones with --mine --status incomplete, those of one page with --page, those of a space, those that are due soon, or those with ids that you have (--task). To complete or reopen one use `task`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `--space KEY` | Only the tasks of this space (its key). Without it the whole site: the current space is not used. |
+| `--page ID` | Only the tasks of this page or blog post: its id, or the address as copied from the browser. |
+| `--task ID` | Only the task with this id, a positive whole number; repeat the option for more tasks, at most 250. |
+| `--status incomplete|complete` | Only the tasks that are incomplete, or only those that are complete. Without it both. |
+| `--mine` | Only the tasks that are assigned to the user of the token. The account id is used for the search and is never printed. |
+| `--created-by-me` | Only the tasks that the user of the token created. |
+| `--due-before DATE` | Only the tasks that are due at or before 00:00 UTC of this day (YYYY-MM-DD). |
+| `--due-after DATE` | Only the tasks that are due at or after 00:00 UTC of this day (YYYY-MM-DD). |
+| `--limit N` | Items per page (1 to 250). Default: 25. |
+| `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor. |
+| `--all` | Fetch every page of the list instead of one. --limit and --cursor are not used then, but a --limit out of range is still refused. |
+| `--with-users` | Show who created, was assigned and completed each task. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu tasks --mine --status incomplete    # your open tasks
+conflu tasks --page 123456 --json    # the tasks of one page, for a script or an agent
+conflu tasks --task 7201 --task 7203 --json    # the tasks with these ids
+conflu tasks --space ENG --due-after 2026-10-26 --due-before 2026-11-01    # what is due in a week
+conflu tasks --created-by-me --status complete --all --select id,pageId,completedAt --format tsv
+conflu tasks --mine --with-users
+```
+
+- A date is a day, YYYY-MM-DD, counted from 00:00 UTC; a date that is no day, or that is before 1970, is a usage error.
+- `--mine` needs one more request, to find out who the token belongs to; the account id never appears in the output.
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: space (key, [hidden] for a personal space unless --with-users, or null), count, nextCursor (null on the last page), truncated and tasks[]: id, localId, status (complete or incomplete), pageId and blogPostId (one of the two is null), spaceId, text (plain text), dueAt, createdAt, updatedAt, completedAt, assignedTo, createdBy and completedBy ({accountId, displayName, email}: null unless --with-users); with --select only those (dotted) keys of every task.
+
+### `conflu task`
+
+Show a task, or complete or reopen it.
+
+```text
+conflu task ID [--complete] [--reopen] [--dry-run] [--json]
+```
+
+Without --complete or --reopen it shows the task and changes nothing. With one of them the task is read first; a task that is in the state asked for is left alone (`unchanged`, nothing is sent); otherwise its status is changed, which is all that Confluence lets a call change about a task, and it is read again, so that the answer says what Confluence holds now.
+
+**When to use:** Use to read one task, or to tick it off (--complete) or untick it (--reopen). Preview with --dry-run. To find the id of a task use `tasks`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `ID` | The task id: `conflu tasks` lists them. |
+| `--complete` | Mark the task as complete. |
+| `--reopen` | Mark the task as incomplete again. |
+| `--dry-run` | Show what would be sent and read the task. Sends nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu task 7201
+conflu task 7201 --complete --dry-run
+conflu task 7201 --complete
+conflu task 7201 --reopen --json
+```
+
+- Without --complete or --reopen the command only reads; it is described as one that changes data because of those two flags, which is why --dry-run exists.
+- If the change was made and the second read fails, the command still succeeds: `readBack` is false, `confirmed` is null, and `notes` and `message` say what happened.
+- If the second read shows another state than the one that was asked for (the call was accepted and the task did not change), the command still ends with exit code 0, but the line does not say `Completed`: it says that Confluence still shows the old state, `confirmed` is false, and `message` and a warning say how to look.
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: without --complete and --reopen: the task as `tasks` shows one (id, localId, status, pageId, blogPostId, spaceId, text, dueAt, createdAt, updatedAt, completedAt, assignedTo, createdBy, completedBy: the three people are always null here). With one of them: action (completed, reopened or unchanged), dryRun, taskId, statusFrom, statusTo, readBack (the task was read again after the change), notes[], payload (exactly what is sent; null when nothing is), task (as `tasks` shows it, as Confluence holds it after the change), confirmed (the task, as read after the change, is in the state that was asked for: false when it is not; null for a dry run, for unchanged and when the read failed) and message (null unless the change could not be confirmed).
+
+### `conflu properties`
+
+Show the content properties of a page or other content.
+
+```text
+conflu properties ID [--key KEY] [--max-chars N] [--with-users] [--limit N] [--cursor TOKEN] [--all] [--json]
+```
+
+A content property is a small piece of JSON with a key and a version. Apps keep their settings and their marks in them. The kind of the content is looked up from its id. A value is shown as compact JSON and cut at --max-chars characters (a cut value ends in `[value cut]`; 0 cuts nothing); with --json it is the JSON value itself. People in a value (user objects, account ids, e-mail addresses, personal links) are hidden unless you add --with-users. To change a value read it whole and real first (--with-users --max-chars 0), because `property-set` refuses the cut and the hidden form.
+
+**When to use:** Use to read what apps and people keep under keys on a page, a blog post, a folder, a whiteboard, a database, a smart link, an attachment (its id starts with att) or a comment. To set one use `property-set`.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `ID` | The id of the content, or the address of it as copied from the browser. An attachment's id starts with att. |
+| `--key KEY` | Only the property with this key (case sensitive). |
+| `--max-chars N` | Cut a value that is longer than N characters as compact JSON: it ends in `[value cut]` and `truncated` says so. 0 cuts nothing; read a value that you will write back with 0. Default: 2000. |
+| `--with-users` | Show the people in the values. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--limit N` | Items per page (1 to 250). Default: 25. |
+| `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor. |
+| `--all` | Fetch every page of the list instead of one. --limit and --cursor are not used then, but a --limit out of range is still refused. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu properties 123456
+conflu properties 123456 --key team.review --json    # one property, for a script or an agent
+conflu properties att5001 --all --max-chars 0    # every property of an attachment, every value whole
+conflu properties 123456 --with-users
+```
+
+- With --json `value` is the JSON value as it is. Only a value that was cut (`truncated` is true) is a text instead: the beginning of its compact JSON and then `[value cut]`, which `property-set` refuses; `totalChars` is the size of the whole. To edit a value read it with --max-chars 0.
+- Apps use properties: do not change one that an app owns without knowing what the app does with it.
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: target{id,type} (type is what Confluence calls the content: page, blogpost, folder, whiteboard, database, embed, attachment, footer-comment or inline-comment), count, nextCursor (null on the last page), truncated (an --all that stopped at its limit) and properties[]: id, key, version, updatedAt, value (any JSON; when truncated the beginning of its compact text and `[value cut]`), truncated, totalChars (the size of the whole text when truncated, else null).
+
+### `conflu property-set`
+
+Create or update a content property.
+
+```text
+conflu property-set ID --key KEY [--value JSON] [--file FILE] [--message TEXT] [--if-version N] [--dry-run] [--json]
+```
+
+The property is read first. A value that is there already is left alone (`unchanged`); a value that differs becomes the next version (the current one plus one), which Confluence refuses with exit code 3 when somebody saved the property in between; with --if-version N the command refuses before it sends anything unless the property is at version N now (0: it must not exist yet). The value must be valid JSON of at most 32 KiB (a number must be finite: 1e999 is refused), and the key may hold letters, digits and _ . : - only. A value that is a copy of what `properties` shows is refused with exit code 1, because saving it would overwrite what the property holds: one with the stand-ins for people (`[hidden]`, `[email]`, `[personal link]`, `[personal space]`, `{"hidden": true}`, `[nested too deeply to show]`, or a blanked attribute such as `ri:account-id="hidden"`), one with a text that was changed (an address shown without its title), and one that holds `[value cut]`, the mark of a value that was cut at --max-chars (refused for a new property too). Read the whole real value with --with-users --max-chars 0. No command deletes a property.
+
+**When to use:** Use to store a small JSON value under a key on a page or other content. The property is created when the key is new, else its next version is saved. Preview with --dry-run, and guard an update with --if-version.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `ID` | The id of the content, or the address of it as copied from the browser. An attachment's id starts with att. |
+| `--key KEY` | The key of the property: letters, digits and _ . : - , up to 255 characters. |
+| `--value JSON` | The value as JSON: 42, true, null, "text" (a text needs its own double quotes), [1,2] or {"a":1}. Windows PowerShell 5.1 removes the double quotes inside an argument: use --file then. |
+| `--file FILE` | Read the value (JSON) from a file (`-` is standard input). |
+| `--message TEXT` | A message stored with the new version (an update only: a new property has none). |
+| `--if-version N` | Refuse (exit code 3) unless the property is at this version now; 0 means that it must not exist yet. |
+| `--dry-run` | Show whether the property would be created or updated, with its current and its new value, and send nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu property-set 123456 --key team.review --value '{"status":"open"}' --dry-run
+conflu property-set 123456 --key team.review --file value.json --if-version 3 --message 'Reviewed'
+conflu property-set 123456 --key my-app:flag --value true
+conflu property-set 123456 --key note --value '"a text"' --json
+```
+
+- A text is JSON only with double quotes around it: --value '"text"'. In Windows PowerShell 5.1 the quotes are lost on the way to the program: put the value into a file (--file value.json) or pipe it in (--file -).
+- Apps keep their settings in properties. Changing a property that an app owns can change what the app does; there is no undo in this CLI, and no command deletes a property.
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: v2 (/wiki/api/v2).
+
+JSON output: action (created, updated or unchanged), dryRun, target{id,type}, key, propertyId (null in a dry run of a creation, and when Confluence's answer to it named no id), versionFrom (null for a creation), versionTo, value (the value that is set), current (what Confluence held, without people; null for a creation), payload (exactly what is sent; null when nothing is) and notes[].
+
 ## Spaces
+
+### `conflu templates`
+
+List the page templates of a space.
+
+```text
+conflu templates [--space KEY] [--blueprints] [--limit N] [--start N] [--all] [--select a,b.c] [--format table|tsv|md] [--json]
+```
+
+Lists the page templates of one space (--space), or the global templates without it: the current space is not used. With --blueprints it lists the templates that blueprints provide instead. Templates are known to the older REST API only, which pages with --start and --limit. The API cannot make a page from a template: nothing in this CLI does.
+
+**When to use:** Use to see which templates a space offers, or the global ones, with their ids: read one with `template`. --blueprints lists the templates that blueprints provide instead.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `--space KEY` | The key of the space. Without it the global templates. |
+| `--blueprints` | List the templates that blueprints provide instead of the page templates. |
+| `--limit N` | Items per page (1 to 250). Default: 25. |
+| `--start N` | Where to start in the list: 0 is the first template. Continue with the nextStart of the last answer. Default: 0. |
+| `--all` | Fetch every template instead of one piece. --limit and --start are not used then, but a --limit out of range and a negative --start are still refused. |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu templates
+conflu templates --space ENG --json
+conflu templates --blueprints --space ENG --all
+conflu templates --space ENG --all --select id,name,description --format tsv
+```
+
+Changes data: no.
+
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: space (key, [hidden] for a personal space, or null: the global templates), blueprints (true for the templates of blueprints), count, start, nextStart (null on the last piece), truncated and templates[]: id, name, type (page or blueprint), description, spaceKey ([hidden] in a personal space, null for a global template), labels[], blueprint (what the template references, as Confluence says it, or null); with --select only those (dotted) keys of every template.
+
+### `conflu template`
+
+Show a template with its body and its variables.
+
+```text
+conflu template ID [--format markdown|text|storage] [--body-only] [--out FILE] [--force] [--json]
+```
+
+Shows the template's name, type, space, description and labels, the variables it declares (`<at:var>` elements, which the Markdown copy cannot show, so they are listed from the storage format) and its body, converted like the body of a page: people are hidden, and `dropped` names what the Markdown cannot say. Nothing in this CLI makes a page from a template.
+
+**When to use:** Use to read a template: what it is, the variables it declares and its body. To start a page from it, save the body (with --format storage --body-only) and create the page from that file: the API cannot make a page from a template.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `ID` | The id of the template: `conflu templates` lists them, and `conflu templates --blueprints` those of the blueprints. |
+| `--format markdown|text|storage` | Format of the body. Default: markdown. |
+| `--body-only` | Print the body and nothing else, for a file or a pipe. Wins over --json. |
+| `--out FILE` | Write the body to this file as UTF-8 instead of printing it (Windows PowerShell 5.1 damages what `>` saves). One line says what was written. Changes nothing in Confluence. |
+| `--force` | Replace the file --out names if it exists (never the settings of the CLI). |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu template 7402
+conflu template 7402 --format storage    # the source, as Confluence keeps it
+conflu template 7402 --format storage --body-only --out body.xml    # only the source, into a file that the program writes as UTF-8, to start a page from it
+conflu template 7402 --json
+```
+
+- Mentions of people in the body come out blanked, so a template with a mention cannot be copied as it is: copy it in the browser.
+- E-mail addresses and personal links come out as [email] and [personal link]; with --format storage a warning on standard error says how many, because a page created from that body would carry those words. `template` has no --with-users.
+- Confluence answers HTTP 403 for a template that does not exist as well as for one that this account may not see.
+- To save the body, use --body-only --out FILE and not `>`: the program then writes the file itself, as UTF-8 without a byte-order mark and with plain line ends, and says so in one line (`Wrote N bytes to FILE`; `file` and `bytes` with --json). Windows PowerShell 5.1 re-encodes what `>` saves and damages every character that is not ASCII. A file that exists is not replaced without --force, and never the settings file of the CLI. It writes a file on this computer and changes nothing in Confluence.
+
+Changes data: no.
+
+REST API: v1 (/wiki/rest/api), because v2 has no call for it: the reason is in `conflu how-to compatibility`.
+
+JSON output: id, name, type, description, spaceKey ([hidden] in a personal space, null for a global template), labels[], blueprint, variables[] (the names that the template declares, in order, each once), variablesComplete (false when the body holds more tags than are read, or longer ones) and body{format,value,dropped[]}; with --body-only --out: file, bytes.
 
 ### `conflu spaces`
 
 List the spaces you can see.
 
 ```text
-conflu spaces [--type global|collaboration|knowledge_base|personal] [--status current|archived] [--search TEXT] [--limit N] [--cursor TOKEN] [--all] [--json]
+conflu spaces [--type global|collaboration|knowledge_base|personal] [--status current|archived] [--search TEXT] [--limit N] [--cursor TOKEN] [--all] [--with-users] [--select a,b.c] [--format table|tsv|md] [--json]
 ```
 
-**When to use:** Use to find the key of a space.
+Lists the spaces that this account can see, a page of the list at a time or all of it. A personal space is named after its owner and keyed by the owner's account id, so it comes out as an entry with the key [hidden], the name [personal space] and no description or address (its id, type, status, home page and date stay); --with-users shows it as Confluence names it, and is refused when CONFLUENCE_HIDE_USERS=true. E-mail addresses and personal links in the name or the description of any other space are redacted. --search looks at what is printed, so it cannot find a person's space by the name of the person.
+
+**When to use:** Use to find the key of a space. A personal space is listed without its owner (key [hidden], name [personal space]) unless you add --with-users.
 
 | Argument or option | Meaning |
 | --- | --- |
 | `--type global|collaboration|knowledge_base|personal` | Only spaces of this type. |
 | `--status current|archived` | Only spaces with this status. Default: current. |
-| `--search TEXT` | Only spaces whose key or name contains this text (reads the whole list). |
+| `--search TEXT` | Only spaces whose key or name, as printed, contains this text (reads the whole list). |
 | `--limit N` | Items per page (1 to 250). Default: 25. |
 | `--cursor TOKEN` | Continue after the end of the previous answer: pass its nextCursor. |
 | `--all` | Fetch every page of the list instead of one (ignores --limit and --cursor). |
+| `--with-users` | Show personal spaces as Confluence names them (the key is the account id of the owner, the name is the owner's), and the names and descriptions of other spaces as they are. Refused when CONFLUENCE_HIDE_USERS=true. |
+| `--select a,b.c` | Keep only these keys per item: a comma separated list, where a dot reaches into an object (a,b.c). |
+| `--format table|tsv|md` | table (the default), tsv (with a header line) or md (a Markdown table); --select names the columns. --json wins over the default. Default: table. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu spaces
 conflu spaces --search engineering --all --json
+conflu spaces --all --select key,name --format md    # only these columns, as a Markdown table
+conflu spaces --type personal --with-users    # personal spaces as Confluence names them (refused when people are hidden)
 ```
 
 Changes data: no.
 
-JSON output: count, nextCursor, truncated and spaces[]: id, key, name, type, status, homepageId, description, created, url.
+REST API: v2 (/wiki/api/v2).
+
+JSON output: count, nextCursor, truncated and spaces[]: id, key, name, type, status, homepageId, description, created, url (a personal space has the key [hidden], the name [personal space], an empty description and an empty url unless --with-users); with --select only those (dotted) keys of every space.
 
 ### `conflu space`
 
 Show one space.
 
 ```text
-conflu space [KEY] [--json]
+conflu space [KEY] [--with-users] [--json]
 ```
 
-Shows a space with its home page and description. Without a key it shows the current space (`conflu use`).
+Shows a space with its home page and description. Without a key it shows the current space (`conflu use`). A personal space is named after its owner and keyed by the owner's account id, so it comes out as an entry with the key [hidden], the name [personal space] and no description or address (its id, type, status, home page and date stay); --with-users shows it as Confluence names it, and is refused when CONFLUENCE_HIDE_USERS=true.
 
-**When to use:** Use to see the properties of one space and the id of its home page.
+**When to use:** Use to see the properties of one space and the id of its home page. A personal space is shown without its owner unless you add --with-users.
 
 | Argument or option | Meaning |
 | --- | --- |
 | `KEY` | Space key. |
+| `--with-users` | Show personal spaces as Confluence names them (the key is the account id of the owner, the name is the owner's), and the names and descriptions of other spaces as they are. Refused when CONFLUENCE_HIDE_USERS=true. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu space ENG
 conflu space --json
+conflu space ENG --with-users    # a personal space as Confluence names it
 ```
 
 Changes data: no.
 
-JSON output: id, key, name, type, status, homepageId, description, created, url.
+REST API: v2 (/wiki/api/v2).
+
+JSON output: id, key, name, type, status, homepageId, description, created, url (a personal space has the key [hidden], the name [personal space], an empty description and an empty url unless --with-users).
 
 ## Setup and information
 
@@ -725,6 +1931,7 @@ Asks for the Confluence API token without showing it and saves it in the configu
 | `--stdin` | Read the token from standard input (for scripts and agents). |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -733,6 +1940,8 @@ printf '%s' "$TOKEN" | conflu setup-token --stdin    # non-interactive
 ```
 
 Changes data: **yes**.
+
+REST API: none, it works on this computer.
 
 JSON output: saved, file.
 
@@ -752,6 +1961,7 @@ Removes the token from the configuration file. Other settings stay.
 | --- | --- |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -759,6 +1969,8 @@ conflu remove-token
 ```
 
 Changes data: **yes**.
+
+REST API: none, it works on this computer.
 
 JSON output: removed, file.
 
@@ -770,7 +1982,7 @@ Select the current space.
 conflu use SPACE_KEY [--json]
 ```
 
-Checks that you can access the space and saves it as the current space (CONFLUENCE_SPACE), so that --space can be left out.
+Checks that you can access the space and saves it as the current space (CONFLUENCE_SPACE), so that --space can be left out. A personal space is named after its owner: it is saved under the key that you typed, and printed as [hidden] ([personal space]).
 
 **When to use:** Use to select the default space, so that --space can be left out.
 
@@ -779,6 +1991,7 @@ Checks that you can access the space and saves it as the current space (CONFLUEN
 | `SPACE_KEY` | Space key. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -787,7 +2000,9 @@ conflu use ENG
 
 Changes data: **yes**.
 
-JSON output: space, name.
+REST API: v2 (/wiki/api/v2): the key is looked up among the spaces.
+
+JSON output: space, name (a personal space is printed as [hidden] and [personal space]: the key that you typed is what is saved).
 
 ### `conflu current`
 
@@ -797,7 +2012,7 @@ Print the current space.
 conflu current [--json]
 ```
 
-Prints the space key set with `conflu use`. Exit code 1 and no output when none is set.
+Prints the space key set with `conflu use`; the key of a personal space is printed as [hidden] (it is the account id of its owner, and the setting keeps the real key). Exit code 1 and no output when none is set.
 
 **When to use:** Use to see which space is the default.
 
@@ -805,6 +2020,7 @@ Prints the space key set with `conflu use`. Exit code 1 and no output when none 
 | --- | --- |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -813,7 +2029,9 @@ conflu current
 
 Changes data: no.
 
-JSON output: space (null when none).
+REST API: none, it works on this computer.
+
+JSON output: space (null when none; [hidden] for a personal space).
 
 ### `conflu clear-space`
 
@@ -829,6 +2047,7 @@ conflu clear-space [--json]
 | --- | --- |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -836,6 +2055,8 @@ conflu clear-space
 ```
 
 Changes data: **yes**.
+
+REST API: none, it works on this computer.
 
 JSON output: cleared.
 
@@ -847,7 +2068,7 @@ Show or change the settings.
 conflu config [show|path|set|unset] [NAME] [VALUE] [--json]
 ```
 
-`show` lists every setting with its value and where it comes from (environment, config file or default); the token is masked and the e-mail address shortened. `set NAME VALUE` and `unset NAME` change the configuration file. The environment overrides the file. The token is set with `conflu setup-token` only.
+`show` lists every setting with its value and where it comes from (environment, config file, profile or default); a setting that the profile CONFLUENCE_PROFILE=agent sets is listed with the source `profile`, and a setting of your own, even `false`, wins over it. The token is masked, the e-mail address shortened and a user name or password in an address replaced. `set NAME VALUE` and `unset NAME` change the configuration file. The environment overrides the file. The token is set with `conflu setup-token` only.
 
 **When to use:** Use to show or change the settings; a secret is never printed.
 
@@ -858,6 +2079,7 @@ conflu config [show|path|set|unset] [NAME] [VALUE] [--json]
 | `VALUE` | New value for `set`. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -870,7 +2092,9 @@ conflu config unset CONFLUENCE_CA_BUNDLE
 
 Changes data: **yes**.
 
-JSON output: file, settings[{name,value,source,description,secret}].
+REST API: none, it works on this computer.
+
+JSON output: show: file, settings[{name,value,source,description,secret}], source is environment, config file, profile or default; path: file; set: saved (the name of the setting, never its value), file; unset: name, removed, file.
 
 ### `conflu ping`
 
@@ -889,6 +2113,7 @@ Calls Confluence once. Prints who the token belongs to, unless --quiet (which pr
 | `--quiet` | Print only OK, not who you are. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -897,6 +2122,8 @@ conflu ping --quiet
 
 Changes data: no.
 
+REST API: v1 (/wiki/rest/api), because v2 has no call for it: the reason is in `conflu how-to compatibility`.
+
 JSON output: ok, baseUrl, user{accountId,displayName} (null when hidden).
 
 ### `conflu doctor`
@@ -904,57 +2131,104 @@ JSON output: ok, baseUrl, user{accountId,displayName} (null when hidden).
 Check the setup and say how to fix it.
 
 ```text
-conflu doctor [--json]
+conflu doctor [--quick] [--cached AGE] [--strict-privacy] [--json]
 ```
 
-Checks the configuration, the credentials, TLS, the connection, whether spaces can be read and the current space, and says how to fix what is wrong. Exit code 1 when a check failed.
+Checks the configuration, the credentials, TLS, where the launcher is, the connection, whether spaces can be read, which of the two REST APIs answer, the current space and the privacy setting, and says how to fix what is wrong. Exit code 1 when a check failed. --quick asks Confluence twice at most (the current user and the spaces), --cached reuses the online checks of a recent successful run, which is the only thing the CLI remembers between two runs, and --strict-privacy makes a setting that lets people be shown a failure.
 
-**When to use:** Use first in a session: it checks the setup and the connection and says how to fix what is wrong.
+**When to use:** Use first in a session: it checks the setup and the connection and says how to fix what is wrong. With --quick and --cached (for example --cached 10m) it is cheap enough for a program that starts many sessions.
 
 | Argument or option | Meaning |
 | --- | --- |
+| `--quick` | Check what the local setup says and ask Confluence twice at most (the current user and the spaces): leave out the check of the current space. |
+| `--cached AGE` | Reuse the online checks of the last successful run if it is not older than AGE (30s, 10m, 2h, 1d; a bare number counts in minutes): nothing is asked of Confluence, and the answer says so. |
+| `--strict-privacy` | Fail (exit code 1) when people can be shown, that is when CONFLUENCE_HIDE_USERS is not true. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu doctor
 conflu doctor --json
+conflu doctor --quick --cached 10m --json    # the cheap form for an agent that starts many sessions
+conflu doctor --strict-privacy
 ```
 
 Changes data: no.
 
-JSON output: ok and checks[{name,status,detail,hint}] with status ok, warn or fail.
+REST API: v2 (/wiki/api/v2), and v1 (/wiki/rest/api) for what v2 cannot do: the reasons are in `conflu how-to compatibility`.
+
+JSON output: ok, checks[{name,status,detail,hint}] with status ok, warn or fail, cached (true when the online checks come from an earlier run) and cachedAt (when that run was, or null).
+
+### `conflu setup`
+
+Find the gateway address of the site.
+
+```text
+conflu setup [--discover] [--yes] [--dry-run] [--json]
+```
+
+`--discover` reads the public tenant information of the site that CONFLUENCE_BASE_URL names (`/_edge/tenant_info`, for example `https://SITE.atlassian.net/_edge/tenant_info`: at the root of that host and of no other, with no credential, and a redirect is not followed) and proposes the gateway address `https://api.atlassian.com/ex/confluence/CLOUD_ID`. On a terminal it asks before it saves the address as CONFLUENCE_BASE_URL; --yes saves it without asking; without a terminal and without --yes it only prints the proposal and the `conflu config set` command that applies it. --dry-run says what would be saved and saves nothing. The gateway address belongs with an API token with scopes; a token without scopes works on the site address (SITE.atlassian.net), so an atlassian.net address does not have to change.
+
+**When to use:** For the person, once: when API tokens are refused on the address of the site (a custom domain), or to move to the gateway address that tokens with scopes use. It changes the local configuration only, never Confluence.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `--discover` | Find the cloud id of the site and propose the gateway address. |
+| `--yes` | Save the address without asking. |
+| `--dry-run` | Say what would be saved and save nothing. |
+| `--json` | Print the result as JSON (stable keys for scripts and agents). |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu setup --discover
+conflu setup --discover --dry-run
+conflu setup --discover --yes --json    # for a script: no question, JSON result
+```
+
+Changes data: **yes, preview with --dry-run**.
+
+REST API: none of the two: --discover reads the public tenant information of your site, which is no REST call.
+
+JSON output: current (CONFLUENCE_BASE_URL now, without a user name or password), cloudId, gatewayAddress, written (the configuration file was changed), dryRun, changed (the address is not the gateway address yet, so there is something to change; false when it already is).
 
 ### `conflu help`
 
 Show the commands, or the help of one command.
 
 ```text
-conflu help [COMMAND]
+conflu help [COMMAND] [--brief]
 ```
 
-**When to use:** Use to read the help of one command.
+**When to use:** Use to read the options and the examples of one command. `--brief` lists every command with its arguments and main options in a few lines: read it once instead of the help of each command.
 
 | Argument or option | Meaning |
 | --- | --- |
 | `COMMAND` | Command name. |
+| `--brief` | One line per command with its arguments and main options, in at most 4 KB, instead of the overview. |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu help
 conflu help update
+conflu help --brief    # every command in one short text
 ```
 
 Changes data: no.
+
+REST API: none, it works on this computer.
 
 ### `conflu commands`
 
 List every command, for programs.
 
 ```text
-conflu commands [--format table|json|mcp] [--only read|write|all] [--json]
+conflu commands [--format table|json|mcp] [--only read|write|all] [--group NAME] [--json]
 ```
 
 With --json it prints the complete description of the CLI: every command with its arguments, examples, JSON output, whether it changes data, when to use it, plus the exit codes and the settings. An AI agent can read it once instead of parsing help text. With --format mcp it prints the commands an agent may use as tool descriptions in the shape of an MCP `tools/list` answer: a name, a description, a JSON Schema for the input, annotations (read-only, destructive, idempotent) and, under `_meta.conflu`, how the properties become a command line. Commands for the person (the token, the settings, the default space) and the raw `api` are not in it.
@@ -964,18 +2238,23 @@ With --json it prints the complete description of the CLI: every command with it
 | Argument or option | Meaning |
 | --- | --- |
 | `--format table|json|mcp` | table (the default), json (the catalog, as with --json) or mcp (tool descriptions for an agent). Default: table. |
-| `--only read|write|all` | With --format mcp: read (the default: nothing that changes Confluence), write or all. Default: read. |
+| `--only read|write|all` | With --format mcp: read (the default: nothing that changes Confluence or writes files), write or all. Default: read. |
+| `--group NAME` | With --format mcp: only the commands of this group of `conflu help` (Read, Work on a page, ...); the case does not matter. Repeat it for several groups. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu commands --json
 conflu commands --format mcp    # the read-only tools, as tool descriptions
-conflu commands --format mcp --only all    # with the tools that change Confluence
+conflu commands --format mcp --only all    # with the tools that change Confluence or write files
+conflu commands --format mcp --group Read --group Spaces    # only the tools of two groups: what a client that has little room loads
 ```
 
 Changes data: no.
+
+REST API: none, it works on this computer.
 
 JSON output: version, commands[], exitCodes[], settings[]; with --format mcp: tools[] (name, title, description, inputSchema, annotations, _meta) and _meta.
 
@@ -987,14 +2266,15 @@ Show the version.
 conflu version [--json]
 ```
 
-Aliases: -V and --version.
+Aliases: -V and --version. The JSON also names the two Confluence Cloud REST APIs that the CLI is written for (v2 as the default, v1 only where v2 has no equivalent) and the day their OpenAPI documents were read; `conflu doctor` checks that both answer on your site.
 
-**When to use:** Use to see which version of the tool runs.
+**When to use:** Use to see which version of the tool runs, and which Confluence Cloud REST APIs it is written for.
 
 | Argument or option | Meaning |
 | --- | --- |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -1004,7 +2284,9 @@ conflu version --json
 
 Changes data: no.
 
-JSON output: name, version, python, platform.
+REST API: none, it works on this computer.
+
+JSON output: name, version, python, platform, confluenceCloud{default, documentsRead, apis{v2{base,version,guide}, v1{base,version,guide}}}.
 
 ### `conflu changelog`
 
@@ -1021,6 +2303,7 @@ Aliases: changes, history.
 | Argument or option | Meaning |
 | --- | --- |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -1028,6 +2311,8 @@ conflu changelog
 ```
 
 Changes data: no.
+
+REST API: none, it works on this computer.
 
 ### `conflu how-to`
 
@@ -1046,6 +2331,7 @@ Without a topic it lists the guides; with one it prints the guide (with --json: 
 | `TOPIC` | Guide name; `readme` is the overview. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -1055,6 +2341,8 @@ conflu how-to use-with-ai-agents
 ```
 
 Changes data: no.
+
+REST API: none, it works on this computer.
 
 JSON output: without a topic: a list of {topic, title}; with a topic: {topic, text}.
 
@@ -1078,6 +2366,7 @@ The skill tells an AI agent (GitHub Copilot, for example) how to use this CLI. `
 | `--dry-run` | Only say where the skill would be written. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
@@ -1088,6 +2377,8 @@ conflu skill install --dir ~/.copilot/skills --force
 
 Changes data: no.
 
+REST API: none, it works on this computer.
+
 JSON output: with show: name, text; with install: path, action (installed, replaced or unchanged), dryRun.
 
 ## Tools
@@ -1097,33 +2388,41 @@ JSON output: with show: name, text; with install: path, action (installed, repla
 Convert Markdown to storage format, or back.
 
 ```text
-conflu convert [FILE] [--source markdown|storage]
+conflu convert [FILE] [--source markdown|storage] [--out FILE] [--force]
 ```
 
-Prints the storage format (Confluence's XHTML) that `create`, `update` and `comment` would send for a Markdown file or for standard input; front matter is dropped. With --source storage it goes the other way and prints the Markdown that `page` shows, naming on stderr what Markdown cannot say. The same converters run behind every command that takes Markdown.
+Prints the storage format (Confluence's XHTML) that `create`, `update` and `comment` would send for a Markdown file or for standard input; front matter is dropped. With --source storage it goes the other way and prints the Markdown that `page` shows, but without the redaction of `page`: an e-mail address, a mention or a profile link in the input stays as it is, because the command converts what you give it. It names on stderr what Markdown cannot say. The same converters run behind every command that takes Markdown.
 
 **When to use:** Use to see what the converter makes of a text before it is sent to Confluence, or to read storage format as Markdown.
 
 | Argument or option | Meaning |
 | --- | --- |
-| `FILE` | The file; `-` or nothing reads standard input. |
+| `FILE` | The file; `-` or nothing reads standard input. At most 16 MiB. |
 | `--source markdown|storage` | What the input is: markdown (the default) or storage format. Default: markdown. |
+| `--out FILE` | Write the result to this file as UTF-8 instead of printing it (Windows PowerShell 5.1 damages what `>` saves). One line says what was written. Changes nothing in Confluence. |
+| `--force` | Replace the file --out names if it exists (never the settings of the CLI). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu convert notes.md
 cat page.xml | conflu convert --source storage
+conflu convert notes.md --out page.xml    # the storage format into a file that the program writes as UTF-8
 ```
 
+- To save the result, use --out FILE and not `>`: the program then writes the file itself, as UTF-8 without a byte-order mark and with plain line ends, and says so in one line (`Wrote N bytes to FILE`). Windows PowerShell 5.1 re-encodes what `>` saves and damages every character that is not ASCII. A file that exists is not replaced without --force, and never the settings file of the CLI. It writes a file on this computer and changes nothing in Confluence. The command has no --json: the line is text, and `data.text` in an envelope.
+
 Changes data: no.
+
+REST API: none, it works on this computer.
 
 ### `conflu api`
 
 Call any Confluence REST endpoint.
 
 ```text
-conflu api METHOD PATH [--data JSON] [--data-file FILE] [--write] [--dry-run] [--json]
+conflu api METHOD PATH [--param KEY=VALUE] [--data JSON] [--data-file FILE] [--write] [--dry-run] [--json]
 ```
 
 An escape hatch for what no command covers yet. PATH is below the wiki address and starts with api/ (API v2, for example api/v2/pages/123456) or rest/ (the older API, for example rest/api/search). GET is free. POST and PUT change Confluence and need --write; preview them with --dry-run. DELETE is deliberately not offered. The answer is Confluence's JSON.
@@ -1134,23 +2433,70 @@ An escape hatch for what no command covers yet. PATH is below the wiki address a
 | --- | --- |
 | `METHOD` | GET, POST or PUT. |
 | `PATH` | Path such as api/v2/pages/123456. A leading / is accepted too. |
+| `--param KEY=VALUE` | A query parameter KEY=VALUE, URL-encoded for you; repeat it. No `&` is needed in the path, which cmd.exe and PowerShell treat specially. |
 | `--data JSON` | Request body as JSON. |
-| `--data-file FILE` | Request body from a file (`-` is standard input). |
+| `--data-file FILE` | Request body from a file (`-` is standard input). At most 16 MiB. |
 | `--write` | Confirm that a POST or PUT may change Confluence. |
 | `--dry-run` | Show the request and send nothing. |
 | `--json` | Print the result as JSON (stable keys for scripts and agents). |
 | `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
 | `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
 
 ```bash
 conflu api GET api/v2/pages/123456
 conflu api GET 'rest/api/search?cql=type=page&limit=5'
+conflu api GET rest/api/search --param cql='type = page AND space = ENG' --param limit=5    # the same without an & in the path
 conflu api PUT api/v2/pages/123456/title --data-file payload.json --write --dry-run
+conflu api PUT api/v2/pages/123456/title --data-file payload.json --write --dry-run --json    # the dry run as one JSON object
 ```
 
 - Git Bash turns an argument that starts with / into a Windows path. The CLI undoes that, but writing the path without the leading / avoids the problem.
+- An & in the path is special in cmd.exe and in PowerShell: quote the path (single quotes in PowerShell and Git Bash, double quotes in cmd.exe), or give the parameters with --param, which needs no quoting.
+- The path stays below the API root: a segment of two dots in any spelling (`..`, `%2e%2e`, `.%2e`, `%2E.`, `..;x`), a backslash and an encoded slash (`%2f`, `%5c`) are refused before anything is sent; the query may hold what it likes.
 - In Windows PowerShell 5.1 pass the body with --data-file: PowerShell removes double quotes inside an argument.
 
 Changes data: **yes, preview with --dry-run**.
 
-JSON output: Confluence's response, unchanged (people removed when CONFLUENCE_HIDE_USERS=true).
+REST API: the one that PATH names: a path that starts with api/ is v2, one that starts with rest/ is v1.
+
+JSON output: Confluence's response, unchanged (people removed when CONFLUENCE_HIDE_USERS=true). With --write --dry-run: dryRun (true), method, path (without the query), query (an object: the query parameters as strings; a name that occurs twice is a list) and body (the JSON that would be sent, or null).
+
+### `conflu mcp`
+
+Run a local MCP server for AI tools.
+
+```text
+conflu mcp [--allow-write] [--allow-files] [--show-users] [--group NAME]
+```
+
+Starts an MCP server on standard input and output: the commands of `conflu commands --format mcp` become tools that run inside this process, so a call needs no shell, and each call builds its own application, as a run of `conflu` would. It speaks JSON-RPC, one message per line, and writes nothing else to standard output; its own messages go to standard error, and the end of the input stops it. Tools that change Confluence are not offered unless --allow-write, tools that write files (download, export) not unless --allow-files, and people stay out unless --show-users. Every path in a call must lie below the folder the server was started in; the settings file and the cache folder are never reachable.
+
+**When to use:** Use to give an MCP client such as VS Code the read-only commands as tools, with no shell and no new process per call; the client starts it from its MCP configuration. An agent that has a shell runs the commands directly instead.
+
+| Argument or option | Meaning |
+| --- | --- |
+| `--allow-write` | Also offer the commands that change Confluence (each has dryRun). Without it they are not offered and a call of one is refused. It does not offer the tools that write files. |
+| `--allow-files` | Also offer the commands that write local files: download and export. A call may write only below the folder the server was started in, never into a hidden folder, never over an existing file, download only below tmp/conflu-attachments, and there is no force. It does not offer the tools that change Confluence. |
+| `--show-users` | Allow the option that shows people (withUsers). Without it a call that sets it is refused; CONFLUENCE_HIDE_USERS=true refuses it anyway. |
+| `--group NAME` | Offer only the commands of this group of `conflu help` (Read, Work on a page, ...); the case does not matter. Repeat it for several groups. A client that loads every tool into a model spends context on all of them: take the groups it needs. |
+| `-v, --verbose` | Log every request to stderr (never the credentials). |
+| `--json-envelope` | Print exactly one JSON object on stdout, {"ok": true, "data": ...} or {"ok": false, "error": {...}}, whatever happens. The exit code and stderr stay as they are. Also CONFLUENCE_JSON_ENVELOPE=1. |
+| `-h, --help` | Show this help. Help never calls Confluence and never changes anything. |
+
+```bash
+conflu mcp    # what an MCP client starts: the read-only tools
+conflu mcp --allow-write    # also the tools that change Confluence
+conflu mcp --allow-files    # also download and export, writing below the working folder
+conflu mcp --group Read --group Spaces    # only the commands of two groups
+```
+
+- VS Code, in .vscode/mcp.json: {"servers": {"conflu": {"type": "stdio", "command": "conflu", "args": ["mcp"]}}}. Add "--allow-write", "--allow-files" or "--group", "Read" to args as needed.
+- Another client: the same command and arguments in its MCP settings, often under a top-level "mcpServers" object: {"mcpServers": {"conflu": {"command": "conflu", "args": ["mcp"]}}}.
+- If the client does not find `conflu` on its PATH, start the program itself. In a console: python "%LOCALAPPDATA%\conflu-c-cli\conflu.py" mcp. In the settings of the client: "command": "python" and "args": [the same path, "mcp"]; VS Code writes ${env:LOCALAPPDATA} for the folder.
+- The working folder is the boundary of every path in a call (file, out, dir, ...): start the server in the project folder ("cwd": "${workspaceFolder}" in VS Code). Paths outside it, `..` escapes, network and device paths, the settings file and the cache folder are refused with an error that says what is allowed.
+- The settings file and the token are read again for each call: `conflu config set` works at the next call. The environment of the server is read once when it starts: restart it after changing CONFLUENCE_BASE_URL, CONFLUENCE_PROFILE or another variable. `CONFLUENCE_PROFILE=agent` in the environment of the server keeps people out of the answers, as it does for every command (`conflu how-to use-with-ai-agents`). More: `conflu how-to mcp-server`.
+
+Changes data: no.
+
+REST API: none of its own: every tool it serves uses the API of its command.

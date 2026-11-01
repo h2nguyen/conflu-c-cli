@@ -5,12 +5,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from conflu_c_cli.adapters.driven import system as system_module
 from conflu_c_cli.adapters.driven.file_config import FileConfigStore, parse_value
 from conflu_c_cli.adapters.driven.local_docs import LocalDocs, find_root
 from conflu_c_cli.adapters.driven.paths import active_home, config_file, home_directories
 from conflu_c_cli.adapters.driven.system import LocalFiles, SystemClock
 from conflu_c_cli.bootstrap import effective_values
-from conflu_c_cli.domain.errors import ConfigError, NotFoundError, ValidationError
+from conflu_c_cli.domain.errors import ConfigError, NotFoundError, UsageError, ValidationError
+from conflu_c_cli.domain.textio import BODY_LIMIT
 
 
 WINDOWS_ONLY = unittest.skipUnless(os.name == "nt", "the home drive is a Windows setting")
@@ -62,6 +64,26 @@ class ConfigStoreTest(Folder):
             {"CONFLUENCE_API_TOKEN": "abc123", "CONFLUENCE_SPACE": "ENG", "CONFLUENCE_CA_BUNDLE": "C:/a b/ca.pem", "CONFLUENCE_EMAIL": "jdoe", "CONFLUENCE_X": "value", "CONFLUENCE_Y": "a b", "CONFLUENCE_Z": "z"},
         )
 
+    def test_a_settings_file_saved_by_windows_powershell_or_notepad_is_read(self):
+        text = "# my settings\r\nCONFLUENCE_SPACE=ENG\r\nCONFLUENCE_EMAIL='alex@example.com'\r\n"
+        for label, data in (
+            ("UTF-16 with a mark", text.encode("utf-16")),
+            ("UTF-16 big endian with a mark", b"\xfe\xff" + text.encode("utf-16-be")),
+            ("UTF-16 without a mark", text.encode("utf-16-le")),
+            ("Windows-1252", text.encode("cp1252")),
+        ):
+            with self.subTest(label):
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.path.write_bytes(data)
+                self.assertEqual(self.store.load(), {"CONFLUENCE_SPACE": "ENG", "CONFLUENCE_EMAIL": "alex@example.com"})
+
+    def test_a_change_to_a_utf16_settings_file_keeps_its_settings_and_writes_utf8(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_bytes("CONFLUENCE_SPACE=OLD\r\nCONFLUENCE_RETRY=3\r\n".encode("utf-16"))
+        self.store.set("CONFLUENCE_SPACE", "ENG")
+        self.assertEqual(self.path.read_text(encoding="utf-8").splitlines(), ["CONFLUENCE_RETRY=3", "CONFLUENCE_SPACE=ENG"])
+        self.assertEqual(self.store.load(), {"CONFLUENCE_RETRY": "3", "CONFLUENCE_SPACE": "ENG"})
+
     def test_the_file_is_data_and_is_never_executed(self):
         for text in (
             "CONFLUENCE_API_TOKEN=$(echo hi)", "CONFLUENCE_API_TOKEN=`echo hi`", "CONFLUENCE_API_TOKEN=$'a\\nb'", 'CONFLUENCE_API_TOKEN="x $(echo hi)"', 'CONFLUENCE_API_TOKEN="$HOME/ca.pem"',
@@ -109,6 +131,25 @@ class ConfigStoreTest(Folder):
 
     def test_path(self):
         self.assertEqual(self.store.path, str(self.path))
+
+
+class EndlessFile:
+    """What `Path.open` gives for a device or a pipe: no end, and a size that says nothing. It remembers how much it was asked for."""
+
+    def __init__(self):
+        self.asked = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *error):
+        return False
+
+    def read(self, count=-1):
+        self.asked.append(count)
+        if count is None or count < 0:
+            raise AssertionError("the file was read without a limit")
+        return b"\x00" * count
 
 
 class FilesTest(Folder):
@@ -166,10 +207,38 @@ class FilesTest(Folder):
     def test_read_errors_are_validation_errors(self):
         with self.assertRaises(ValidationError):
             self.files.read_text(str(self.root / "missing.txt"))
-        binary = self.root / "binary"
-        binary.write_bytes(b"\xff\xfe\x00\x80")
+        picture = self.root / "diagram.png"
+        picture.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x10")
+        with self.assertRaises(ValidationError) as caught:
+            self.files.read_text(str(picture))
+        self.assertIn("is not text", caught.exception.message)
         with self.assertRaises(ValidationError):
-            self.files.read_text(str(binary))
+            self.files.read_text(str(self.root), "utf-8")  # a folder
+
+    def test_text_is_read_whichever_encoding_a_windows_editor_chose(self):
+        text = "Grüße, Größe und Übung — fertig\r\nZweite Zeile\r\n"
+        for label, data in (
+            ("UTF-8", text.encode("utf-8")),
+            ("UTF-8 with a mark", b"\xef\xbb\xbf" + text.encode("utf-8")),
+            ("UTF-16 with a mark", text.encode("utf-16")),
+            ("UTF-16 big endian with a mark", b"\xfe\xff" + text.encode("utf-16-be")),
+            ("UTF-16 without a mark", text.encode("utf-16-le")),
+            ("UTF-16 big endian without a mark", text.encode("utf-16-be")),
+            ("UTF-32 with a mark", text.encode("utf-32")),
+            ("Windows-1252", text.encode("cp1252")),
+        ):
+            with self.subTest(label):
+                target = self.root / "input.txt"
+                target.write_bytes(data)
+                self.assertEqual(self.files.read_text(str(target)), "Grüße, Größe und Übung — fertig\nZweite Zeile\n")
+
+    def test_an_encoding_that_is_asked_for_by_name_is_used_as_it_is(self):
+        target = self.root / "latin.txt"
+        target.write_bytes("Größe".encode("latin-1"))
+        self.assertEqual(self.files.read_text(str(target), "latin-1"), "Größe")
+        with self.assertRaises(ValidationError) as caught:
+            self.files.read_text(str(target), "ascii")
+        self.assertIn("is not valid ascii text", caught.exception.message)
 
     def test_byte_order_mark(self):
         target = self.root / "bom.csv"
@@ -180,6 +249,39 @@ class FilesTest(Folder):
         target = self.root / "crlf.md"
         target.write_bytes(b"---\r\nsummary: x\r\n---\r\nbody\r\n")
         self.assertEqual(self.files.read_text(str(target)), "---\nsummary: x\n---\nbody\n")
+
+    def test_a_file_is_read_up_to_a_count_and_no_further(self):
+        target = self.root / "ten.bin"
+        target.write_bytes(b"0123456789")
+        self.assertEqual(self.files.read_up_to(str(target), 4), b"0123")
+        self.assertEqual(self.files.read_up_to(str(target), 10), b"0123456789")
+        self.assertEqual(self.files.read_up_to(str(target), 1000), b"0123456789")
+        self.assertEqual(self.files.read_up_to(str(target), 0), b"")
+        for path in (self.root / "missing.bin", self.root):  # a file that is not there, and a folder
+            with self.subTest(path=path.name), self.assertRaises(ValidationError):
+                self.files.read_up_to(str(path), 4)
+
+    def test_a_file_of_unknown_length_is_read_one_byte_beyond_the_limit_and_refused(self):
+        endless = EndlessFile()
+        with mock.patch("pathlib.Path.open", return_value=endless), self.assertRaises(UsageError) as caught:
+            self.files.read_text(str(self.root / "device"))
+        self.assertEqual(endless.asked, [BODY_LIMIT + 1])
+        self.assertEqual(caught.exception.exit_code, 2)
+        self.assertIn(f"{BODY_LIMIT:,} bytes (16 MiB)", caught.exception.message)
+        with mock.patch("pathlib.Path.open", return_value=EndlessFile()) as opened, self.assertRaises(UsageError):
+            self.files.read_text(str(self.root / "device"), "latin-1")  # an encoding that is asked for is bounded too
+        self.assertEqual(opened.call_count, 1)
+
+    def test_a_text_file_of_exactly_the_limit_is_read_and_one_byte_more_is_refused(self):
+        target = self.root / "limit.md"
+        with mock.patch.object(system_module, "BODY_LIMIT", 100):
+            target.write_bytes(b"a" * 100)
+            self.assertEqual(self.files.read_text(str(target)), "a" * 100)
+            target.write_bytes(b"a" * 101)
+            for encoding in ("utf-8", "latin-1"):
+                with self.subTest(encoding=encoding), self.assertRaises(UsageError) as caught:
+                    self.files.read_text(str(target), encoding)
+                self.assertIn(f"{target} holds more than 100 bytes", caught.exception.message)
 
     def test_listing(self):
         for name in ("002-b.md", "001-a.md", "notes.txt", "010-c.md", "x-001.md"):

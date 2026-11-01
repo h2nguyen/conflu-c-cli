@@ -82,6 +82,8 @@ def _storage_stats(storage: str) -> dict[str, object]:
 
     text = re.sub(r"[\s\u00a0]+", " ", block_text(root)).strip()
     hrefs: list[str] = []
+    anchors: list[str] = []
+    placeholders: list[str] = []
     counts = {name: 0 for name in ("h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "table", "tr", "th", "td", "{a}image", "{a}structured-macro")}
     code_bodies: list[str] = []
     nested_anchor = False
@@ -95,6 +97,8 @@ def _storage_stats(storage: str) -> dict[str, object]:
             href = node.attrib.get("href")
             if href:
                 hrefs.append(href)
+            if node.attrib.get("name") or node.attrib.get("id"):
+                anchors.append(node.attrib.get("name") or node.attrib.get("id", ""))
         elif node.tag == "{r}url":
             value = node.attrib.get("{r}value")
             if value:
@@ -107,15 +111,29 @@ def _storage_stats(storage: str) -> dict[str, object]:
             title = node.attrib.get("{r}content-title", "")
             space = node.attrib.get("{r}space-key", "")
             hrefs.append(f"page:{space}/{title}" if space else f"page:{title}")
+        elif node.tag.startswith("{r}") and node.tag != "{r}user":  # every other place that a link can point at: a blog post, a space, a shortcut ...
+            hrefs.append(node.tag[3:] + ":" + "/".join(value for _, value in sorted(node.attrib.items())))
         elif node.tag == "{a}plain-text-body":
             code_bodies.append(node.text or "")
+        elif node.tag == "{a}placeholder":
+            placeholders.append("".join(node.itertext()))
+        if node.tag == "{a}link" and node.attrib.get("{a}anchor"):
+            anchors.append(node.attrib["{a}anchor"])
         if node.tag in counts:
             counts[node.tag] += 1
         for child in node:
             walk(child, anchor_depth)
 
     walk(root)
-    return {"text": text, "hrefs": tuple(hrefs), "counts": counts, "code_bodies": tuple(code_bodies), "nested_anchor": nested_anchor}
+    return {
+        "text": text,
+        "hrefs": tuple(hrefs),
+        "anchors": tuple(anchors),
+        "placeholders": tuple(placeholders),
+        "counts": counts,
+        "code_bodies": tuple(code_bodies),
+        "nested_anchor": nested_anchor,
+    }
 
 
 class ConverterTestCase(unittest.TestCase):
@@ -175,6 +193,12 @@ MARKDOWN_CASES = {
     "horizontal_rule_star": {"source": "***\n", "contains": ("<hr />",)},
     "table_basic": {"source": "| A | B |\n| --- | --- |\n| x | y |\n", "contains": ("<table><tbody>", "<th>A</th>", "<td>x</td>")},
     "table_alignment": {"source": "| A | B | C |\n| :--- | :---: | ---: |\n| x | y | z |\n", "contains": ('style="text-align: left;"', 'style="text-align: center;"', 'style="text-align: right;"')},
+    "table_of_one_column": {"source": "| A |\n| --- |\n| x |\n| y |\n", "equals": "<table><tbody><tr><th>A</th></tr><tr><td>x</td></tr><tr><td>y</td></tr></tbody></table>"},
+    "table_of_one_column_with_alignment_and_no_blanks": {"source": "|A|\n|:-:|\n|x|\n", "contains": ('<th style="text-align: center;">A</th>', "<td style=\"text-align: center;\">x</td>")},
+    "one_column_without_the_outer_pipes_is_no_table": {"source": "A |\n--- |\nx |\n", "contains": ("<p>A |",), "not_contains": ("<table>",)},
+    "a_header_of_two_cells_over_a_delimiter_of_one_is_no_table": {"source": "| a | b |\n|---|\n", "contains": ("<p>| a | b |",), "not_contains": ("<table>",)},
+    "a_pipe_in_a_line_over_a_rule_is_no_table": {"source": "use the | pipe\n|---|\n", "not_contains": ("<table>",)},
+    "table_cell_keeps_an_escaped_backslash_for_the_inline_text": {"source": "| H | I |\n| --- | --- |\n| \\\\`tick` | x |\n", "contains": ("<td>\\<code>tick</code></td>", "<td>x</td>")},
     "bold_em_strike_code": {"source": "***both*** **bold** *em* ~~gone~~ `code`\n", "contains": ("<strong><em>both</em></strong>", "<strong>bold</strong>", "<em>em</em>", 'text-decoration: line-through;', "<code>code</code>")},
     "inline_link_title": {"source": '[site](https://example.com "Example")\n', "contains": ('<a href="https://example.com" title="Example">site</a>',)},
     "reference_link": {"source": "[site][ref]\n\n[ref]: https://example.com/path\n", "contains": ('<a href="https://example.com/path">site</a>',)},
@@ -258,6 +282,26 @@ STORAGE_MARKDOWN_CASES = {
     "list_formatting": {"source": "<ol type=\"a\"><li>one</li></ol>", "text": "1. one", "dropped": ("formatting:list",)},
     "table_row_headers": {"source": "<table><tbody><tr><th>A</th><th>B</th></tr><tr><th>R</th><td>x</td></tr></tbody></table>", "text": "| A | B |\n| --- | --- |\n| R | x |", "dropped": ("table:row-headers",)},
     "malformed_truncated": {"source": "<p>Start <strong>bold", "text": "Start **bold**", "dropped": ()},
+    "blogpost_link": {"source": "<p>Read <ac:link><ri:blog-post ri:content-title=\"Release 2026\" ri:posting-day=\"2026/10/01\" ri:space-key=\"ENG\" /><ac:plain-text-link-body><![CDATA[the post]]></ac:plain-text-link-body></ac:link>.</p>", "text": "Read the post.", "dropped": ("link:blogpost",)},
+    "blogpost_link_without_text": {"source": "<p>Read <ac:link><ri:blog-post ri:content-title=\"Release 2026\" ri:space-key=\"ENG\" /></ac:link>.</p>", "text": "Read .", "dropped": ("link:blogpost",)},
+    "space_link": {"source": "<ac:link><ri:space ri:space-key=\"ENG\" /><ac:plain-text-link-body><![CDATA[the space]]></ac:plain-text-link-body></ac:link>", "text": "the space", "dropped": ("link:space",)},
+    "space_link_without_text": {"source": "<ac:link><ri:space ri:space-key=\"ENG\" /></ac:link>", "text": "", "dropped": ("link:space",)},
+    "shortcut_link": {"source": "<ac:link><ri:shortcut ri:key=\"jira\" ri:parameter=\"ENG-1\" /><ac:link-body>the ticket</ac:link-body></ac:link>", "text": "the ticket", "dropped": ("link:shortcut",)},
+    "shortcut_link_without_text": {"source": "<ac:link><ri:shortcut ri:key=\"jira\" ri:parameter=\"ENG-1\" /></ac:link>", "text": "", "dropped": ("link:shortcut",)},
+    "content_link": {"source": "<ac:link><ri:content-entity ri:content-id=\"12345\" /><ac:link-body>the thing</ac:link-body></ac:link>", "text": "the thing", "dropped": ("link:content",)},
+    "content_link_without_text": {"source": "<ac:link><ri:content-entity ri:content-id=\"12345\" /></ac:link>", "text": "", "dropped": ("link:content",)},
+    "link_to_another_kind_of_target": {"source": "<ac:link><ri:group ri:name=\"devs\" /><ac:link-body>the group</ac:link-body></ac:link>", "text": "the group", "dropped": ("link:group",)},
+    "page_link_to_an_anchor": {"source": "<ac:link ac:anchor=\"intro\"><ri:page ri:content-title=\"Guide\" /><ac:link-body>the intro</ac:link-body></ac:link>", "text": "[the intro](page:Guide)", "dropped": ("link:anchor", "link:page")},
+    "link_to_an_address": {"source": "<ac:link><ri:url ri:value=\"https://x.test/a\" /><ac:link-body>the address</ac:link-body></ac:link>", "text": "[the address](https://x.test/a)", "dropped": ()},
+    "link_without_a_target": {"source": "<ac:link><ac:link-body>nowhere</ac:link-body></ac:link>", "text": "nowhere", "dropped": ()},
+    "anchor_by_name": {"source": "<p><a name=\"top\"></a>Top of the page</p>", "text": "Top of the page", "dropped": ("anchor",)},
+    "anchor_by_id_around_text": {"source": "<p><a id=\"top\">Top</a> of the page</p>", "text": "Top of the page", "dropped": ("anchor",)},
+    "anchor_that_is_a_link_too": {"source": "<p><a name=\"top\" href=\"https://x.test/a\">Top</a></p>", "text": "[Top](https://x.test/a)", "dropped": ("anchor",)},
+    "placeholder": {"source": "<p>Date: <ac:placeholder>type a date</ac:placeholder></p>", "text": "Date:", "dropped": ("placeholder",)},
+    "table_caption": {"source": "<table><caption>Sales</caption><tbody><tr><th>A</th></tr><tr><td>1</td></tr></tbody></table>", "text": "Sales\n\n| A |\n| --- |\n| 1 |", "dropped": ("html:caption",)},
+    "inline_code_with_a_link": {"source": "<p><code><a href=\"https://x.test/a\">x</a></code></p>", "text": "`x`", "dropped": ("formatting:inline-code",)},
+    "wrapper_with_two_paragraphs": {"source": "<div><p>one</p><p>two</p></div>", "text": "one\n\ntwo", "dropped": ()},
+    "indented_paragraph_is_not_named": {"source": "<p style=\"margin-left: 30.0px;\">indented</p>", "text": "indented", "dropped": ()},
 }
 
 
@@ -319,6 +363,13 @@ class RoundTripAndRobustnessTest(ConverterTestCase):
 
     def test_supported_table_round_trip_is_stable(self) -> None:
         self.assert_stable_markdown("| A | B |\n| --- | --- |\n| x | y |\n")
+
+    def test_a_table_of_one_column_comes_back_as_a_table_and_not_as_a_line_of_pipes(self) -> None:
+        self.assert_stable_markdown("| A |\n| --- |\n| x |\n")
+        storage = "<table><tbody><tr><th>A</th></tr><tr><td>x</td></tr></tbody></table>"
+        converted = storage_to_markdown(storage)
+        self.assertEqual((converted.text, converted.dropped), ("| A |\n| --- |\n| x |", ()))
+        self.assertEqual(markdown_to_storage(converted.text), storage)
 
     def test_supported_link_round_trip_is_stable(self) -> None:
         self.assert_stable_markdown("[site](https://example.com)\n")
@@ -747,6 +798,46 @@ STORAGE_CORPUS = {
     "long text": {"storage": "<p>" + "Lorem ipsum dolor sit amet. " * 40 + "</p>", "accepted": ()},
     "url as text": {"storage": '<p><a href="https://a.test/x">https://a.test/x</a> and <a href="https://a.test/y">y</a></p>', "accepted": ()},
     "wikipedia link": {"storage": '<p><a href="https://en.wikipedia.org/wiki/Foo_(bar)">Foo</a> and <a href="https://en.wikipedia.org/wiki/Foo_(bar)">https://en.wikipedia.org/wiki/Foo_(bar)</a></p>', "accepted": ()},
+    # Every kind of target that a link can have, the places that links jump to and the hint of a template were dropped without a name once (see SilentLossTest).
+    "blog post link": {"storage": '<p>Read <ac:link><ri:blog-post ri:content-title="Release 2026" ri:posting-day="2026/10/01" ri:space-key="ENG" /><ac:plain-text-link-body><![CDATA[the post]]></ac:plain-text-link-body></ac:link>.</p>', "accepted": ("link:blogpost",)},
+    "blog post link no body": {"storage": '<p>Read <ac:link><ri:blog-post ri:content-title="Release 2026" ri:posting-day="2026/10/01" ri:space-key="ENG" /></ac:link>.</p>', "accepted": ("link:blogpost",)},
+    "space link": {"storage": '<p>Go to <ac:link><ri:space ri:space-key="ENG" /><ac:plain-text-link-body><![CDATA[the space]]></ac:plain-text-link-body></ac:link>.</p>', "accepted": ("link:space",)},
+    "space link no body": {"storage": '<p>Go to <ac:link><ri:space ri:space-key="ENG" /></ac:link>.</p>', "accepted": ("link:space",)},
+    "shortcut link": {"storage": '<p>See <ac:link><ri:shortcut ri:key="jira" ri:parameter="ENG-1" /><ac:plain-text-link-body><![CDATA[the ticket]]></ac:plain-text-link-body></ac:link>.</p>', "accepted": ("link:shortcut",)},
+    "shortcut link no body": {"storage": '<p>See <ac:link><ri:shortcut ri:key="jira" ri:parameter="ENG-1" /></ac:link>.</p>', "accepted": ("link:shortcut",)},
+    "content link": {"storage": '<p>See <ac:link><ri:content-entity ri:content-id="12345" /><ac:link-body>the thing</ac:link-body></ac:link>.</p>', "accepted": ("link:content",)},
+    "content link no body": {"storage": '<p>See <ac:link><ri:content-entity ri:content-id="12345" /></ac:link>.</p>', "accepted": ("link:content",)},
+    "link to another kind of target": {"storage": '<p><ac:link><ri:group ri:name="devs" /><ac:link-body>the group</ac:link-body></ac:link></p>', "accepted": ("link:group",)},
+    "page link to an anchor": {"storage": '<p><ac:link ac:anchor="intro"><ri:page ri:content-title="Guide" /><ac:link-body>the intro</ac:link-body></ac:link></p>', "accepted": ("link:anchor", "link:page")},
+    "link to an anchor": {"storage": '<p><ac:link ac:anchor="intro"><ac:link-body>the intro</ac:link-body></ac:link></p>', "accepted": ("link:anchor",)},
+    "attachment of another page": {"storage": '<p><ac:link><ri:attachment ri:filename="a.pdf"><ri:page ri:content-title="Other" /></ri:attachment><ac:link-body>a</ac:link-body></ac:link></p>', "accepted": ("link:attachment", "link:page")},
+    "blog post link in a table cell": {"storage": '<table><tbody><tr><th>A</th></tr><tr><td><ac:link><ri:blog-post ri:content-title="News" /><ac:link-body>news</ac:link-body></ac:link></td></tr></tbody></table>', "accepted": ("link:blogpost",)},
+    "space link in a list item": {"storage": '<ul><li>the <ac:link><ri:space ri:space-key="ENG" /><ac:link-body>space</ac:link-body></ac:link></li></ul>', "accepted": ("link:space",)},
+    "address link": {"storage": '<p><ac:link><ri:url ri:value="https://x.test/a" /><ac:link-body>the address</ac:link-body></ac:link></p>', "accepted": ()},
+    "named anchor": {"storage": '<p><a name="top"></a>Top of the page</p>', "accepted": ("anchor",)},
+    "named anchor around text": {"storage": '<p><a name="top">Top</a> of the page</p>', "accepted": ("anchor",)},
+    "anchor by id": {"storage": '<p><a id="top"></a>Top of the page</p>', "accepted": ("anchor",)},
+    "anchor that is a link too": {"storage": '<p><a name="top" href="https://x.test/a">Top</a></p>', "accepted": ("anchor",)},
+    "link to an anchor of the page": {"storage": '<p><a href="#top">Top</a></p>', "accepted": ()},
+    "placeholder": {"storage": '<p><ac:placeholder>@Pick the attendees</ac:placeholder></p>', "accepted": ("placeholder",)},
+    "placeholder after text": {"storage": '<p>Date: <ac:placeholder>type a date</ac:placeholder></p>', "accepted": ("placeholder",)},
+    "placeholder in a table cell": {"storage": '<table><tbody><tr><th>A</th></tr><tr><td><p><ac:placeholder>fill in</ac:placeholder></p></td></tr></tbody></table>', "accepted": ("placeholder",)},
+    "table caption": {"storage": '<table><caption>Sales</caption><tbody><tr><th>A</th></tr><tr><td>1</td></tr></tbody></table>', "accepted": ("html:caption",)},
+    "inline code with a link": {"storage": '<p><code><a href="https://x.test/a">x</a></code></p>', "accepted": ("formatting:inline-code",)},
+    "inline code with bold": {"storage": "<p><code><strong>x</strong></code></p>", "accepted": ("formatting:inline-code",)},
+    "link around code": {"storage": '<p><a href="https://x.test/a"><code>x</code></a></p>', "accepted": ()},
+    "wrapper with two paragraphs": {"storage": "<div><p>one</p><p>two</p></div>", "accepted": ()},
+    "wrapper in a list item": {"storage": "<ul><li><div>a</div><div>b</div></li></ul>", "accepted": ()},
+    # Formatting that no name covers (the guide says so): the text, the links and the structure are what they were.
+    "indented paragraph": {"storage": '<p style="margin-left: 30.0px;">indented</p>', "accepted": ()},
+    "indented heading": {"storage": '<h2 style="margin-left: 60.0px;">indented</h2>', "accepted": ()},
+    "paragraph background": {"storage": '<p style="background-color: #ffff00;">marked</p>', "accepted": ()},
+    "table width and layout": {"storage": '<table data-layout="wide" data-table-width="1200" ac:local-id="t1"><colgroup><col style="width: 120px;" /><col style="width: 300px;" /></colgroup><tbody><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>', "accepted": ()},
+    "table and cell classes": {"storage": '<table class="confluenceTable"><tbody><tr><th class="confluenceTh">A</th></tr><tr><td class="confluenceTd" style="min-width: 100px;">1</td></tr></tbody></table>', "accepted": ()},
+    "smart link appearance": {"storage": '<p><a href="https://x.test/browse/A-1" data-card-appearance="inline">https://x.test/browse/A-1</a></p>', "accepted": ()},
+    "link that opens in a new window": {"storage": '<p><a href="https://x.test/a" target="_blank" rel="noopener">x</a></p>', "accepted": ()},
+    "font size and class": {"storage": '<p><span class="big" style="font-size: 20px;">big</span></p>', "accepted": ()},
+    "html comment": {"storage": "<p>a<!-- a note for the editors -->b</p>", "accepted": ()},
 }
 
 
@@ -868,6 +959,8 @@ class StorageCorpusTest(ConverterTestCase):
                 if not converted.dropped:
                     self.assertEqual(stats1["text"], stats2["text"])
                     self.assertEqual(stats1["hrefs"], stats2["hrefs"])
+                    self.assertEqual(stats1["anchors"], stats2["anchors"])
+                    self.assertEqual(stats1["placeholders"], stats2["placeholders"])
                     self.assertEqual(stats1["counts"], stats2["counts"])
                     self.assertEqual(stats1["code_bodies"], stats2["code_bodies"])
 
@@ -1072,3 +1165,214 @@ class ReviewerRegressionTest(ConverterTestCase):
 
     def test_markdown_to_storage_drops_one_leading_bom(self) -> None:
         self.assertEqual(markdown_to_storage("\ufeff# title\r\nbody"), "<h1>title</h1>\n<p>body</p>")
+
+
+class SilentLossTest(ConverterTestCase):
+    """Whatever the Markdown cannot carry is named, so that a Markdown that replaces a page is refused (docs/how-to/markdown-and-storage-format.md).
+
+    A link to a blog post, to a space, to a shortcut and to content by its id, the places that links jump to and the hint of a template were dropped without a
+    name once: the Markdown showed the text of the link, or nothing, and `update --file` took the rest away without a word."""
+
+    TEXT = "<ac:plain-text-link-body><![CDATA[the text]]></ac:plain-text-link-body>"
+    TARGETS = {
+        "link:blogpost": '<ri:blog-post ri:content-title="Release 2026" ri:posting-day="2026/10/01" ri:space-key="ENG" />',
+        "link:space": '<ri:space ri:space-key="ENG" />',
+        "link:shortcut": '<ri:shortcut ri:key="jira" ri:parameter="ENG-1" />',
+        "link:content": '<ri:content-entity ri:content-id="12345" />',
+        "link:group": '<ri:group ri:name="devs" />',  # a kind that has no name of its own: the name says what the element is
+    }
+
+    def test_every_kind_of_target_is_named_with_the_text_of_the_link_and_without_it(self) -> None:
+        for name, target in self.TARGETS.items():
+            with self.subTest(name=name):
+                labelled = storage_to_markdown(f"<p>See <ac:link>{target}{self.TEXT}</ac:link>.</p>")
+                self.assertEqual((labelled.text, labelled.dropped), ("See the text.", (name,)))
+                bare = storage_to_markdown(f"<p>See <ac:link>{target}</ac:link>.</p>")
+                self.assertEqual((bare.text, bare.dropped), ("See .", (name,)))
+                self.assertEqual(lossy_constructs(f"<ac:link>{target}</ac:link>"), (name,))
+
+    def test_the_names_do_not_depend_on_whether_people_are_shown(self) -> None:
+        for name, target in self.TARGETS.items():
+            with self.subTest(name=name):
+                for show in (False, True):
+                    self.assertEqual(storage_to_markdown(f"<ac:link>{target}{self.TEXT}</ac:link>", show_mentions=show).dropped, (name,))
+
+    def test_a_link_with_more_than_one_target_names_each_of_them(self) -> None:
+        both = f"<ac:link>{self.TARGETS['link:blogpost']}{self.TARGETS['link:space']}</ac:link>"
+        self.assertEqual(storage_to_markdown(both).dropped, ("link:blogpost", "link:space"))
+        with_page = '<ac:link><ri:page ri:content-title="Guide" /><ri:blog-post ri:content-title="News" /></ac:link>'
+        self.assertEqual(storage_to_markdown(with_page).dropped, ("link:blogpost", "link:page"))
+        of_another_page = '<ac:link><ri:attachment ri:filename="a.pdf"><ri:page ri:content-title="Other" /></ri:attachment></ac:link>'
+        self.assertEqual(storage_to_markdown(of_another_page).dropped, ("link:attachment", "link:page"))
+
+    def test_an_address_and_a_person_are_no_lost_targets(self) -> None:
+        self.assertEqual(storage_to_markdown('<ac:link><ri:url ri:value="https://x.test/a" /><ac:link-body>a</ac:link-body></ac:link>').dropped, ())
+        self.assertEqual(storage_to_markdown('<ac:link><ri:user ri:account-id="abc" /></ac:link>').dropped, ("mention",))
+        self.assertEqual(storage_to_markdown("<ac:link><ac:link-body>nowhere</ac:link-body></ac:link>").dropped, ())
+
+    def test_the_anchor_of_a_link_is_named_whatever_the_target_is(self) -> None:
+        for target, expected in (
+            ("", ("link:anchor",)),
+            ('<ri:page ri:content-title="Guide" />', ("link:anchor", "link:page")),
+            ('<ri:attachment ri:filename="a.pdf" />', ("link:anchor", "link:attachment")),
+            ('<ri:url ri:value="https://x.test/a" />', ("link:anchor",)),
+            ('<ri:space ri:space-key="ENG" />', ("link:anchor", "link:space")),
+        ):
+            with self.subTest(target=target):
+                self.assertEqual(storage_to_markdown(f'<ac:link ac:anchor="intro">{target}<ac:link-body>x</ac:link-body></ac:link>').dropped, expected)
+
+    def test_the_names_are_the_same_wherever_the_link_stands(self) -> None:
+        link = f"<ac:link>{self.TARGETS['link:blogpost']}{self.TEXT}</ac:link>"
+        task = f"<ac:task-list><ac:task><ac:task-id>1</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>{link}</ac:task-body></ac:task></ac:task-list>"
+        macro = f'<ac:structured-macro ac:name="info"><ac:rich-text-body><p>{link}</p></ac:rich-text-body></ac:structured-macro>'
+        layout = f"<ac:layout><ac:layout-section><ac:layout-cell><p>{link}</p></ac:layout-cell></ac:layout-section></ac:layout>"
+        table = f"<table><tbody><tr><th>A</th><th>B</th></tr><tr><td>{link}</td><td>x</td></tr></tbody></table>"
+        for where, storage in (("a heading", f"<h2>{link}</h2>"), ("a list", f"<ul><li>{link}</li></ul>"), ("a paragraph in a list", f"<ol><li><p>{link}</p></li></ol>"),
+                               ("a quote", f"<blockquote><p>{link}</p></blockquote>"), ("a cell", table), ("a macro", macro), ("a task", task), ("a layout", layout)):
+            with self.subTest(where=where):
+                self.assertIn("link:blogpost", storage_to_markdown(storage).dropped)
+
+    def test_a_named_anchor_is_named_wherever_it_stands_and_its_text_stays(self) -> None:
+        for where, storage in (
+            ("a paragraph", '<p><a name="top">Top</a></p>'),
+            ("a heading", '<h2><a id="top"></a>Top</h2>'),
+            ("a list item", '<ul><li><a name="top">Top</a></li></ul>'),
+            ("a cell", '<table><tbody><tr><th>A</th><th>B</th></tr><tr><td><a name="top">Top</a></td><td>x</td></tr></tbody></table>'),
+        ):
+            with self.subTest(where=where):
+                converted = storage_to_markdown(storage)
+                self.assertEqual(converted.dropped, ("anchor",))
+                self.assertIn("Top", converted.text)
+
+    def test_a_link_to_an_anchor_of_the_same_page_is_a_link(self) -> None:
+        converted = storage_to_markdown('<p><a href="#top">Top</a></p>')
+        self.assertEqual((converted.text, converted.dropped), ("[Top](#top)", ()))
+
+    def test_a_placeholder_is_named_wherever_it_stands_and_its_text_is_left_out(self) -> None:
+        for where, storage in (
+            ("a paragraph", "<p>Date: <ac:placeholder>type a date</ac:placeholder></p>"),
+            ("alone", "<ac:placeholder>type here</ac:placeholder>"),
+            ("a list item", "<ul><li><ac:placeholder>an item</ac:placeholder></li></ul>"),
+            ("a cell", "<table><tbody><tr><th>A</th><th>B</th></tr><tr><td><p><ac:placeholder>fill in</ac:placeholder></p></td><td>x</td></tr></tbody></table>"),
+            ("a macro", '<ac:structured-macro ac:name="info"><ac:rich-text-body><p><ac:placeholder>say it</ac:placeholder></p></ac:rich-text-body></ac:structured-macro>'),
+        ):
+            with self.subTest(where=where):
+                converted = storage_to_markdown(storage)
+                self.assertIn("placeholder", converted.dropped)
+                for hint in ("type a date", "type here", "an item", "fill in", "say it"):
+                    self.assertNotIn(hint, converted.text)
+
+    def test_a_table_caption_stays_as_a_paragraph_above_the_table_and_is_named(self) -> None:
+        converted = storage_to_markdown("<table><caption>Sales <strong>2026</strong></caption><tbody><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>")
+        self.assertEqual((converted.text, converted.dropped), ("Sales **2026**\n\n| A | B |\n| --- | --- |\n| 1 | 2 |", ("html:caption",)))
+        only = storage_to_markdown("<table><caption>Nothing else</caption></table>")
+        self.assertEqual((only.text, only.dropped), ("Nothing else", ("html:caption",)))
+        inside = storage_to_markdown("<table><tbody><tr><th>A</th><th>B</th></tr><tr><td><table><caption>Inner</caption><tbody><tr><td>x</td></tr></tbody></table></td><td>y</td></tr></tbody></table>")
+        self.assertEqual(inside.dropped, ("html:caption", "table:rich-cells"))
+        self.assertIn("Inner<br>", inside.text)
+
+    def test_markup_inside_inline_code_is_named_and_the_text_stays_as_code(self) -> None:
+        for storage in ('<p><code><a href="https://x.test/a">x</a></code></p>', "<p><code><strong>x</strong></code></p>", "<p><code>x<br />y</code></p>"):
+            with self.subTest(storage=storage):
+                self.assertEqual(storage_to_markdown(storage).dropped, ("formatting:inline-code",))
+        self.assertEqual(storage_to_markdown('<p><a href="https://x.test/a"><code>x</code></a></p>').text, "[`x`](https://x.test/a)")
+        self.assertEqual(storage_to_markdown("<p><code>a &lt; b</code></p>").dropped, ())
+
+    def test_a_wrapper_around_blocks_does_not_run_them_together(self) -> None:
+        for storage, expected in (
+            ("<div><p>one</p><p>two</p></div>", "one\n\ntwo"),
+            ("<section><p>one</p><ul><li>two</li></ul></section>", "one\n\n- two"),
+            ("<div><div><p>one</p></div><p>two</p></div>", "one\n\ntwo"),
+            ("<p>before</p><div>middle</div>after", "before\n\nmiddle\n\nafter"),
+            ("<ul><li><div>a</div><div>b</div></li></ul>", "- a\n\n  b"),
+            ('<ac:structured-macro ac:name="info"><ac:rich-text-body><div><p>one</p><p>two</p></div></ac:rich-text-body></ac:structured-macro>', "> [!NOTE]\n> one\n>\n> two"),
+        ):
+            with self.subTest(storage=storage[:50]):
+                converted = storage_to_markdown(storage)
+                self.assertEqual((converted.text, converted.dropped), (expected, ()))
+        self.assertEqual(storage_to_text("<div><p>one</p><p>two</p></div>"), "one\n\ntwo")
+        in_a_cell = storage_to_markdown("<table><tbody><tr><th>A</th><th>B</th></tr><tr><td><div><p>a</p><p>b</p></div></td><td>x</td></tr></tbody></table>")
+        self.assertEqual((in_a_cell.text, in_a_cell.dropped), ("| A | B |\n| --- | --- |\n| a<br>b | x |", ("table:rich-cells",)))
+
+    def test_a_name_made_of_text_of_the_page_has_no_address_in_it_unless_people_are_shown(self) -> None:
+        for storage, hidden, shown in (
+            ("<p><ac:link><ri:alex@example.com /><ac:link-body>x</ac:link-body></ac:link></p>", "link:[email]", "link:alex@example.com"),
+            ('<ac:structured-macro ac:name="alex@example.com" />', "macro:[email]", "macro:alex@example.com"),
+            ("<alex@example.com>x</alex@example.com>", "html:[email]", "html:alex@example.com"),
+            ("<ac:alex@example.com>x</ac:alex@example.com>", "tag:[email]", "tag:alex@example.com"),
+        ):
+            with self.subTest(hidden=hidden):
+                self.assertEqual(storage_to_markdown(storage).dropped, (hidden,))
+                self.assertEqual(storage_to_markdown(storage, show_mentions=True).dropped, (shown,))
+
+    def test_what_the_reader_of_the_text_sees_is_unchanged_for_the_links_that_were_not_named(self) -> None:
+        self.assertEqual(storage_to_text(f"<p>See <ac:link>{self.TARGETS['link:blogpost']}{self.TEXT}</ac:link>.</p>"), "See the text.")
+        self.assertEqual(storage_to_text(f'<p><ac:link><ri:page ri:content-title="Guide" />{self.TEXT}</ac:link></p>'), "the text")
+
+    def test_hostile_numbers_of_the_new_constructs_are_read_in_a_moment(self) -> None:
+        shapes = {
+            "kinds of target": "<p><ac:link>" + "".join(f'<ri:kind{number} ri:a="b" />' for number in range(20000)) + "</ac:link></p>",
+            "links": '<p><ac:link><ri:space ri:space-key="ENG" /></ac:link></p>' * 20000,
+            "anchors": '<p><a name="x"></a></p>' * 20000,
+            "placeholders": "<p><ac:placeholder>x</ac:placeholder></p>" * 20000,
+            "captions": "<table>" + "<caption>c</caption>" * 20000 + "<tbody><tr><td>a</td></tr></tbody></table>",
+            "wrappers": "<div>" * 90 + "<p>x</p>" + "</div>" * 90,
+            "tags that never end": "<ac:link><ri:space ri:space-key=" * 3000 + "<a name=" * 3000,
+        }
+        for name, storage in shapes.items():
+            with self.subTest(shape=name):
+                started = time.perf_counter()
+                try:
+                    storage_to_markdown(storage)
+                except ValidationError:
+                    pass  # nested too deeply is an answer too
+                self.assertLess(time.perf_counter() - started, 3.0)
+
+
+class UnnamedFormattingTest(ConverterTestCase):
+    """The guide lists the formatting that no name covers (docs/how-to/markdown-and-storage-format.md, 'Formatting that is not named'). The text, the links and the
+    structure of the page are what they were without it, which is why a Markdown that replaces the page is not refused for it."""
+
+    SAMPLES = {
+        "the indentation of a paragraph": '<p style="margin-left: 30.0px;">text</p>',
+        "the indentation of a heading": '<h2 style="margin-left: 60.0px;">text</h2>',
+        "the background of a paragraph": '<p style="background-color: #ffff00;">text</p>',
+        "the size and the class of a span": '<p><span class="big" style="font-size: 20px;">text</span></p>',
+        "the width and the layout of a table": '<table data-layout="wide" data-table-width="1200" ac:local-id="t1"><colgroup><col style="width: 120px;" /></colgroup><tbody><tr><th>A</th><th>B</th></tr><tr><td>text</td><td>x</td></tr></tbody></table>',
+        "the classes of a table": '<table class="confluenceTable"><tbody><tr><th class="confluenceTh">A</th><th>B</th></tr><tr><td class="confluenceTd" style="min-width: 100px;">text</td><td>x</td></tr></tbody></table>',
+        "how a link looks and opens": '<p><a href="https://x.test/a" data-card-appearance="inline" target="_blank" rel="noopener">text</a></p>',
+        "the numbers and the uuid of a task": "<ac:task-list><ac:task><ac:task-id>7</ac:task-id><ac:task-uuid>1f2e-3d4c</ac:task-uuid><ac:task-status>incomplete</ac:task-status><ac:task-body>text</ac:task-body></ac:task></ac:task-list>",
+        "the id of a macro": '<ac:structured-macro ac:name="info" ac:schema-version="1" ac:macro-id="abc-123"><ac:rich-text-body><p>text</p></ac:rich-text-body></ac:structured-macro>',
+        "a comment in the source": "<p>te<!-- a note for the editors -->xt</p>",
+    }
+
+    def test_none_of_it_is_named_and_the_text_stays(self) -> None:
+        for what, storage in self.SAMPLES.items():
+            with self.subTest(what=what):
+                converted = storage_to_markdown(storage)
+                self.assertEqual(converted.dropped, ())
+                self.assertIn("text", converted.text)
+
+    def test_the_guide_says_so(self) -> None:
+        guide = (Path(__file__).resolve().parents[2] / "docs" / "how-to" / "markdown-and-storage-format.md").read_text(encoding="utf-8")
+        marker = "**Formatting that is not named.**"
+        self.assertIn(marker, guide)
+        said = guide.split(marker, 1)[1].split("\n\n", 1)[0]
+        for words in ("indentation", "width", "layout", "numbers"):
+            self.assertIn(words, said)
+
+
+class NamesAreDocumentedTest(ConverterTestCase):
+    """Every name that the converter gives to something it cannot carry is in the guide that says what the names mean."""
+
+    def test_the_names_of_the_samples_are_in_the_guide(self) -> None:
+        guide = (Path(__file__).resolve().parents[2] / "docs" / "how-to" / "markdown-and-storage-format.md").read_text(encoding="utf-8")
+        names = {name for case in STORAGE_MARKDOWN_CASES.values() for name in case["dropped"]}  # type: ignore[union-attr]
+        names |= {name for case in STORAGE_CORPUS.values() for name in case["accepted"]}  # type: ignore[union-attr]
+        names |= {name for sample in SoundnessCorpusTest.CORPUS for name in sample["dropped"]}  # type: ignore[union-attr]
+        self.assertGreater(len(names), 30)
+        families = {"macro": "macro:NAME", "html": "html:TAG", "tag": "tag:NAME", "link": "link:NAME"}
+        for name in sorted(names):
+            with self.subTest(name=name):
+                family = name.split(":", 1)[0]
+                self.assertTrue(f"`{name}`" in guide or (family in families and families[family] in guide), f"the guide does not say what {name} means")

@@ -34,10 +34,11 @@ def title_payload(title: str, status: str = "current") -> dict[str, Any]:
 
 
 def comment_payload(page_id: str, body: str, parent_comment_id: str = "") -> dict[str, Any]:
-    payload: dict[str, Any] = {"pageId": page_id, "body": storage_body(body)}
+    """A footer comment on a page, or the answer to a comment. The document of `POST /footer-comments` says to give `pageId` for a comment on a
+    page and `parentCommentId` for an answer: "Do not provide" the page if creating a reply (the answer belongs to the page of its parent)."""
     if parent_comment_id:
-        payload["parentCommentId"] = parent_comment_id
-    return payload
+        return {"parentCommentId": parent_comment_id, "body": storage_body(body)}
+    return {"pageId": page_id, "body": storage_body(body)}
 
 
 def label_payload(names: Sequence[str]) -> list[dict[str, str]]:

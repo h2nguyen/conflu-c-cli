@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from conflu_c_cli.adapters.driven import http_transport
+from conflu_c_cli.adapters.driven import http_transport, rest_structure
 from conflu_c_cli.adapters.driven.confluence_mapper import search_hit_from
 from conflu_c_cli.adapters.driven.confluence_rest import RestConfluenceGateway, _request_target
 from conflu_c_cli.adapters.driven.http_transport import HttpResponse, HttpTransport
@@ -27,6 +27,7 @@ from conflu_c_cli.domain.payloads import create_page_payload, label_payload, upd
 from tests.support.fakes import ACCOUNT, RELEASE_NOTES_BODY
 from tests.support.public_certificates import AMAZON_ROOT_CA_1, CROSS_SIGNED, INTERMEDIATE
 from tests.support.mock_confluence import MockConfluence
+from tests.support.mock_structure import StructureRoutes
 
 
 class MockCase(unittest.TestCase):
@@ -436,6 +437,13 @@ class PeopleAndSpacesTest(GatewayCase):
         self.assertEqual(self.gw.get_space("eng").key, "ENG")  # the key is found in upper case too
         self.assertEqual(self.gw.get_space_by_id("1002").key, "DOCS")
 
+    def test_a_space_by_its_id_is_a_request_that_the_document_allows(self):
+        # no line of the sweep reaches this call (the answer for a folder names its space, and this is asked only when it does not), so it is judged here
+        self.mock.strict_parameters = True
+        self.assertEqual(self.gw.get_space_by_id("1002").key, "DOCS")
+        self.assertEqual([(item.path, item.query) for item in self.calls("GET", "/api/v2/spaces/")], [("/api/v2/spaces/1002", {"description-format": ["plain"]})])
+        self.assertEqual(self.mock.invalid_requests, [])
+
     def test_an_unknown_space(self):
         with self.assertRaises(NotFoundError) as caught:
             self.gw.get_space("NOPE")
@@ -463,6 +471,22 @@ class PagesTest(GatewayCase):
     def test_without_the_body(self):
         self.assertIsNone(self.gw.get_page("2002", with_body=False).body)
         self.assertEqual(self.mock.requests[-1].query.get("body-format"), None)
+
+    def test_a_page_with_more_labels_than_the_answer_holds_gets_all_of_them(self):
+        # The document: the labels that `include-labels` adds are "limited to 50", and `labels.meta.hasMore` says that there are more.
+        self.mock.page_cap = 100
+        names = tuple(f"label-{number:03d}" for number in range(60))
+        page_id = self.mock.add_page("ENG", "Many labels", labels=names)
+        page = self.gw.get_page(page_id)
+        self.assertEqual(sorted(label.name for label in page.labels), sorted(names))
+        self.assertEqual(self.mock.requests[-2].query.get("include-labels"), ["true"])
+        self.assertEqual([item.path for item in self.mock.requests[-2:]], [f"/api/v2/pages/{page_id}", f"/api/v2/pages/{page_id}/labels"])
+
+    def test_the_labels_of_the_answer_are_all_there_are_when_it_says_so(self):
+        self.mock.page_cap = 100
+        page_id = self.mock.add_page("ENG", "Fifty labels", labels=tuple(f"label-{number:02d}" for number in range(50)))
+        self.assertEqual(len(self.gw.get_page(page_id).labels), 50)
+        self.assertEqual(self.calls("GET", f"/api/v2/pages/{page_id}/labels"), [])
 
     def test_an_unknown_page(self):
         with self.assertRaises(NotFoundError):
@@ -493,6 +517,37 @@ class PagesTest(GatewayCase):
         self.assertEqual([(ref.id, ref.title) for ref in self.gw.list_ancestors("2004")], [("2001", "Engineering Home"), ("2003", "Architecture")])
         self.assertEqual(self.gw.list_ancestors("2001"), [])
 
+    def test_ancestors_beyond_what_one_call_holds_are_asked_for_again_with_the_first_ancestor(self):
+        # The document: a call answers with at most `limit` ancestors, the nearest ones, "and additional results (if available) will be available by
+        # calling this endpoint with the ID of first ancestor in the response payload".
+        self.mock.page_cap = 100
+        chain = ["2001"]
+        for number in range(5):
+            chain.append(self.mock.add_page("ENG", f"Level {number}", parent_id=chain[-1]))
+        leaf = self.mock.add_page("ENG", "Leaf", parent_id=chain[-1])
+        with mock.patch.object(rest_structure, "ANCESTORS_AT_A_TIME", 2):
+            found = self.gw.list_ancestors(leaf)
+        self.assertEqual([ref.id for ref in found], chain)
+        self.assertEqual([ref.title for ref in found][:3], ["Engineering Home", "Level 0", "Level 1"])
+        asked = [item.path for item in self.mock.requests if item.path.endswith("/ancestors")]
+        self.assertEqual(asked, [f"/api/v2/pages/{leaf}/ancestors", f"/api/v2/pages/{chain[-2]}/ancestors", f"/api/v2/pages/{chain[-4]}/ancestors", "/api/v2/pages/2001/ancestors"])
+        self.assertEqual({item.query["limit"][0] for item in self.mock.requests if item.path.endswith("/ancestors")}, {"2"})
+
+    def test_the_ancestors_of_a_folder_continue_with_whatever_kind_the_first_ancestor_is(self):
+        self.mock.area(StructureRoutes).add("folder", "7090", "Deep folder", "2004")
+        with mock.patch.object(rest_structure, "ANCESTORS_AT_A_TIME", 2):
+            found = self.gw.list_container_ancestors("folder", "7090")
+        self.assertEqual([(ref.id, ref.type) for ref in found], [("2001", "page"), ("2003", "page"), ("2004", "page")])
+        asked = [item.path for item in self.mock.requests if item.path.endswith("/ancestors")]
+        self.assertEqual(asked, ["/api/v2/folders/7090/ancestors", "/api/v2/pages/2003/ancestors"])
+
+    def test_the_asking_for_more_ancestors_has_a_bound(self):
+        self.mock.page_cap = 100
+        with mock.patch.object(rest_structure, "ANCESTORS_AT_A_TIME", 1), mock.patch.object(rest_structure, "MAX_ANCESTOR_CALLS", 1):
+            found = self.gw.list_container_ancestors("page", "2004")  # two ancestors, one at a time: the one call that is allowed gives the nearest
+        self.assertEqual([ref.id for ref in found], ["2003"])
+        self.assertEqual(len([item for item in self.mock.requests if item.path.endswith("/ancestors")]), 1)
+
     def test_descendants_with_depth_and_cursor(self):
         self.mock.page_cap = 2
         nodes, _ = fetch_all(lambda cursor: self.gw.list_descendants("2001", depth=3, cursor=cursor))
@@ -500,6 +555,14 @@ class PagesTest(GatewayCase):
         shallow, _ = fetch_all(lambda cursor: self.gw.list_descendants("2001", depth=1, cursor=cursor))
         self.assertEqual({node.id for node in shallow}, {"2002", "2003", "2005"})
         self.assertEqual({node.type for node in nodes}, {"page"})
+
+    def test_the_children_of_a_page_are_a_request_that_the_document_allows(self):
+        # no command asks for them (the commands list the children of a folder, a whiteboard, a database or a smart link), so no line of the sweep reaches the call
+        self.mock.strict_parameters = True
+        children = self.gw.list_children("page", "2001", limit=250)
+        self.assertEqual(([item.id for item in children.items], children.cursor), (["2002", "2003"], "2"))
+        self.assertEqual([(item.path, item.query) for item in self.calls("GET", "/api/v2/pages/2001")], [("/api/v2/pages/2001/direct-children", {"limit": ["250"]})])
+        self.assertEqual(self.mock.invalid_requests, [])
 
     def test_versions_newest_first(self):
         versions, _ = fetch_all(lambda cursor: self.gw.list_versions("2002", cursor=cursor))
@@ -569,7 +632,7 @@ class CommentsLabelsTest(GatewayCase):
     def test_adding_a_comment_and_a_reply(self):
         created = self.gw.add_comment({"pageId": "2002", "body": {"representation": "storage", "value": "<p>Noted.</p>"}})
         self.assertEqual((created.kind, created.body, created.author.account_id), ("footer", "<p>Noted.</p>", ACCOUNT))
-        reply = self.gw.add_comment({"pageId": "2002", "parentCommentId": created.id, "body": {"representation": "storage", "value": "<p>Yes.</p>"}})
+        reply = self.gw.add_comment({"parentCommentId": created.id, "body": {"representation": "storage", "value": "<p>Yes.</p>"}})
         self.assertEqual(reply.parent_id, created.id)
         self.assertEqual([comment.id for comment in self.gw.list_replies(created.id).items], [reply.id])
         with self.assertRaises(NotFoundError):
@@ -639,6 +702,13 @@ class AttachmentsTest(GatewayCase):
             self.gw.upload_attachment("999", "x.txt", b"x")
         with self.assertRaises(NotFoundError):
             self.gw.list_attachments("999")
+
+    def test_the_labels_of_an_attachment_are_asked_for_by_its_number(self):
+        # the document types the id of this one attachment call as an integer (the others take `(att)?[0-9]+`)
+        labels = self.gw.list_attachment_labels("att5101")
+        self.assertEqual([label.name for label in labels.items], ["draft", "plan"])
+        self.assertEqual([item.path for item in self.calls("GET", "/api/v2/attachments")], ["/api/v2/attachments/5101/labels"])
+        self.assertEqual(self.transport().request("GET", "/api/v2/attachments/att5101/labels").status, 404)
 
 
 class SearchAndRawTest(GatewayCase):
