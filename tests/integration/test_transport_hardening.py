@@ -124,5 +124,45 @@ class InvalidAddressTest(MockCase):
         self.assertEqual((connection.host, connection.port), ("::1", 80))
 
 
+def read1_that_leaves_a_finished_answer_open(response, n=-1):
+    """`HTTPResponse.read1` as Python 3.10 has it, and 3.11 and 3.12 before December 2023 (gh-113199): an answer that was read up to its
+    Content-Length is not closed."""
+    if response.fp is None or response._method == "HEAD":
+        return b""
+    if response.chunked:
+        return response._read1_chunked(n)
+    if response.length is not None and (n < 0 or n > response.length):
+        n = response.length
+    result = response.fp.read1(n)
+    if not result and n:
+        response._close_conn()
+    elif response.length is not None:
+        response.length -= len(result)
+    return result
+
+
+class KeepAliveTest(MockCase):
+    """The connection to Confluence is kept for the next request. Where `read1` leaves an answer that it read up to its Content-Length open (Python
+    3.10, and 3.11 and 3.12 before December 2023) the connection takes no new request ("ResponseNotReady: Request-sent"): every second request
+    failed, a read was asked again after a pause, and a write was lost. These tests run with the `read1` of those versions, whatever Python they
+    run on."""
+
+    def test_the_connection_takes_the_next_request_where_read1_does_not_close_a_finished_answer(self):
+        with mock.patch.object(http.client.HTTPResponse, "read1", read1_that_leaves_a_finished_answer_open):
+            transport = self.transport()
+            for _ in range(4):
+                self.assertEqual(transport.request("GET", "/rest/api/user/current").status, 200)
+        self.assertEqual((self.sleeps, [line for line in self.debug if "failed" in line]), ([], []))
+        self.assertEqual(len(self.mock.requests), 4)  # none of them was asked twice
+
+    def test_a_write_after_a_read_is_not_lost_where_read1_does_not_close_a_finished_answer(self):
+        with mock.patch.object(http.client.HTTPResponse, "read1", read1_that_leaves_a_finished_answer_open):
+            transport = self.transport()
+            self.assertEqual(transport.request("GET", "/rest/api/user/current").status, 200)
+            answer = transport.request("POST", "/api/v2/users-bulk", body=b'{"accountIds": ["5b10ac8d82e05b22cc7d4ef5"]}')
+        self.assertEqual(answer.status, 200)
+        self.assertEqual(self.sleeps, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -317,6 +317,7 @@ class HttpTransport:
                 raise TimeoutError("the answer was still coming in when the time allowed for it (CONFLUENCE_MAX_TIME) was up")
             chunk = read(65536)
             if not chunk:
+                response.close()  # `read1` of Python 3.10, and of 3.11 and 3.12 before their fix of December 2023 (gh-113199), leaves an answer that it read to its Content-Length open, and the connection takes no new request while one is
                 return b"".join(chunks)
             total += len(chunk)
             if total > limit:

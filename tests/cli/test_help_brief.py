@@ -112,7 +112,7 @@ class BriefTest(unittest.TestCase):
         self.assertEqual(BRIEF_OPTIONS, 4)
         for line in render_brief(all_commands()).splitlines():
             if line.startswith("  ") and "[--" in line:
-                shown = re.search(r"\[((?:--[\w-]+ ?)+)(?:\.\.\.)?\]", line)
+                shown = re.search(r"\[(--[\w-]+(?: --[\w-]+)*)(?: \.\.\.)?\]", line)
                 self.assertIsNotNone(shown, line)
                 self.assertLessEqual(len(shown.group(1).split()), BRIEF_OPTIONS, line)
 

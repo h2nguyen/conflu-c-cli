@@ -1,0 +1,8 @@
+name: conflu-c-cli CodeQL configuration
+
+# What is shipped (src/, the installer and the scripts) is scanned with the default queries. The tests are left out: they feed the program
+# fake tokens, hostile addresses and odd input on purpose, to see that it refuses or hides them, and their stand-in for Confluence
+# answers only to those tests on this computer. Code scanning takes the fake tokens for real ones and follows them through the program,
+# which raises alerts that no run of the program can cause.
+paths-ignore:
+  - tests

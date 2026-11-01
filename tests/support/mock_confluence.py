@@ -584,6 +584,9 @@ class MockConfluence:
 
 class _BaseHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # An answer goes out in two writes (the headers, the body). With Nagle's algorithm the second waits for the acknowledgement of the first, which
+    # a client on a kept connection may hold back for up to 40 ms on Linux: an answer could wait that long, and a run of the suite gives about 20,000.
+    disable_nagle_algorithm = True
     confluence: MockConfluence
 
     def log_message(self, *args: object) -> None:
@@ -619,7 +622,7 @@ class _BaseHandler(BaseHTTPRequestHandler):
         if compress:
             self.send_header("Content-Encoding", "gzip")
         for name, value in (headers or {}).items():
-            self.send_header(name, value)
+            self.send_header(name, str(value).replace("\r", "").replace("\n", ""))  # a line break would end the header and start another
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
@@ -629,7 +632,7 @@ class _BaseHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         for name, value in (headers or {}).items():
-            self.send_header(name, value)
+            self.send_header(name, str(value).replace("\r", "").replace("\n", ""))
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
@@ -1687,10 +1690,10 @@ class _ApiHandler(_BaseHandler):
     def _parse_cql(self, raw: str) -> tuple[list[tuple[str, Any]], str | None]:
         text = raw.strip()
         order = None
-        order_match = re.search(r"\s+ORDER\s+BY\s+lastmodified\s+(ASC|DESC)\s*$", text, re.I)
-        if order_match:
-            order = order_match.group(1).upper()
-            text = text[: order_match.start()].strip()
+        pieces = text.rsplit(None, 4)  # what comes before, and the four words of `ORDER BY lastmodified ASC`
+        if len(pieces) == 5 and [word.upper() for word in pieces[1:3]] == ["ORDER", "BY"] and pieces[3].lower() == "lastmodified" and pieces[4].upper() in ("ASC", "DESC"):
+            order = pieces[4].upper()
+            text = pieces[0].strip()
         parts: list[str] = []
         current: list[str] = []
         in_quotes = False
@@ -1726,7 +1729,7 @@ class _ApiHandler(_BaseHandler):
             if match:
                 clauses.append(("type", {match.group(1).lower()}))
                 continue
-            match = re.fullmatch(r"type\s+in\s*\((.+)\)", part, re.I)
+            match = re.fullmatch(r"type\s+in\s*\(([^()]+)\)", part, re.I)
             if match:
                 values = []
                 for token in match.group(1).split(","):
@@ -1736,24 +1739,24 @@ class _ApiHandler(_BaseHandler):
                     values.append(token)
                 clauses.append(("type", set(values)))
                 continue
-            match = re.fullmatch(r'space\s*=\s*"((?:\\.|[^"])*)"', part, re.I)
+            match = re.fullmatch(r'space\s*=\s*"((?:\\.|[^"\\])*)"', part, re.I)
             if match:
                 clauses.append(("space", bytes(match.group(1), "utf-8").decode("unicode_escape")))
                 continue
-            match = re.fullmatch(r'text\s*~\s*"((?:\\.|[^"])*)"', part, re.I)
+            match = re.fullmatch(r'text\s*~\s*"((?:\\.|[^"\\])*)"', part, re.I)
             if match:
                 clauses.append(("text", _text_terms(match.group(1))))
                 continue
-            match = re.fullmatch(r'\(\s*(text\s*~\s*"(?:\\.|[^"])*"(?:\s+OR\s+text\s*~\s*"(?:\\.|[^"])*")+)\s*\)', part, re.I)
+            match = re.fullmatch(r'\(\s*(text\s*~\s*"(?:\\.|[^"\\])*"(?:\s+OR\s+text\s*~\s*"(?:\\.|[^"\\])*")+)\s*\)', part, re.I)
             if match:
-                values = re.findall(r'text\s*~\s*"((?:\\.|[^"])*)"', match.group(1))
+                values = re.findall(r'text\s*~\s*"((?:\\.|[^"\\])*)"', match.group(1))
                 clauses.append(("textany", [term for value in values for term in _text_terms(value)]))
                 continue
-            match = re.fullmatch(r'title\s*~\s*"((?:\\.|[^"])*)"', part, re.I)
+            match = re.fullmatch(r'title\s*~\s*"((?:\\.|[^"\\])*)"', part, re.I)
             if match:
                 clauses.append(("title", bytes(match.group(1), "utf-8").decode("unicode_escape")))
                 continue
-            match = re.fullmatch(r'label\s*=\s*"((?:\\.|[^"])*)"', part, re.I)
+            match = re.fullmatch(r'label\s*=\s*"((?:\\.|[^"\\])*)"', part, re.I)
             if match:
                 clauses.append(("label", bytes(match.group(1), "utf-8").decode("unicode_escape").lower()))
                 continue

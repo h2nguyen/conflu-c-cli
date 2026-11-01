@@ -169,6 +169,7 @@ class _Body:
     def __init__(self, pieces, length=None):
         self.pieces = list(pieces)
         self.length = length
+        self.closed = False
 
     def getheader(self, name, default=""):
         return self.length if name == "Content-Length" and self.length is not None else default
@@ -178,6 +179,9 @@ class _Body:
 
     def read(self, size):  # a stub of the old kind: it can only wait for the whole of what it is asked
         raise AssertionError("read() waits for as many bytes as asked: the pieces are taken with read1()")
+
+    def close(self):
+        self.closed = True
 
 
 class ReadTest(unittest.TestCase):
@@ -205,9 +209,22 @@ class ReadTest(unittest.TestCase):
         self.assertEqual(HttpTransport._read(_Body([b"ab", b"cd"]), 1000, time.monotonic() + 60.0), b"abcd")
         self.assertEqual(HttpTransport._read(_Body([]), 1000, time.monotonic() + 60.0), b"")
 
+    def test_an_answer_that_was_read_to_its_end_is_closed_so_that_the_connection_takes_the_next_request(self):
+        """Python 3.10, and 3.11 and 3.12 before December 2023, do not close an answer that `read1` read up to its Content-Length (gh-113199): the
+        connection refuses the next request."""
+        for pieces in ([b"ab", b"cd"], [b"ab"], []):
+            with self.subTest(pieces=pieces):
+                body = _Body(pieces)
+                HttpTransport._read(body, 1000)
+                self.assertTrue(body.closed)
+        unfinished = _Body([b"abc", b"def"])
+        with self.assertRaises(AnswerTooBig):
+            HttpTransport._read(unfinished, 5)
+        self.assertFalse(unfinished.closed)  # the connection is closed by the caller, which cannot use it again
+
     def test_a_response_without_read1_is_read_with_read(self):
         pieces = [b"ab", b"cd", b""]
-        stub = types.SimpleNamespace(getheader=lambda name, default="": default, read=lambda size: pieces.pop(0))
+        stub = types.SimpleNamespace(getheader=lambda name, default="": default, read=lambda size: pieces.pop(0), close=lambda: None)
         self.assertEqual(HttpTransport._read(stub, 1000, time.monotonic() + 60.0), b"abcd")
 
     def test_more_than_the_limit_is_refused_as_it_comes_in(self):

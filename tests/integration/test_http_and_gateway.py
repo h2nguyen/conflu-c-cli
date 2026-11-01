@@ -343,6 +343,9 @@ class ReadTest(unittest.TestCase):
         def read(self, size):
             return self._chunks.pop(0)
 
+        def close(self):
+            pass
+
     def test_odd_content_length_values_are_ignored_not_trusted(self):
         for announced in ("\u00b2", "\u0661\u0662", "-5", "1e3", " ", "abc", "12 ", ""):
             with self.subTest(announced=announced):

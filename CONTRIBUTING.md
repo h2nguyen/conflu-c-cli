@@ -49,6 +49,11 @@ Confluence Cloud server in `tests/support/mock_confluence.py` (the routes of eve
 `tests/support/mock_<area>.py`). No test and no tool in this repository contacts a real Confluence site. To run one test module:
 `python -m unittest tests.unit.test_domain`.
 
+On GitHub Actions the failures of a run are also written as annotations of the check (`tests/support/github_annotations.py`), with the slowest
+tests when something failed, and a run that is still going after `CONFLU_TEST_TIMEOUT` seconds (set in `.github/workflows/ci.yml`, unset on your
+computer) prints the stack of every thread and stops, which names the test that hangs. CodeQL scans `src/`, the installer and the scripts; the
+tests are left out of it (`.github/codeql/codeql-config.yml` says why).
+
 Before you open a pull request, run all three checks:
 
 ```bash

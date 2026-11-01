@@ -6,6 +6,7 @@ thing the CLI remembers between two runs, and only a person who asks for it with
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from dataclasses import dataclass
 from typing import Mapping
@@ -85,14 +86,14 @@ class Doctor:
     # -- what an earlier successful run left ------------------------------------------------------
 
     def _cache_key(self, quick: bool) -> str:
-        """What a remembered run was about: the site, the account, the token (only as part of a hash, so that the file name tells nothing),
-        the current space, the TLS settings and the version of the program, and whether it was the quick form."""
+        """What a remembered run was about: the site, the account, the current space, the TLS settings and the version of the program, and
+        whether it was the quick form, signed with the token as the key (an HMAC, as the anchors of comments are): another token is another
+        key, and the token itself is never hashed, so the file name tells nothing about it."""
         settings = self._settings
         identity = "|".join(
             [
                 settings.base_url,
                 settings.email,
-                settings.api_token,
                 settings.space,
                 settings.ca_bundle,
                 str(settings.insecure),
@@ -101,7 +102,7 @@ class Doctor:
                 "quick" if quick else "full",
             ]
         )
-        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+        return hmac.new(settings.api_token.encode("utf-8"), identity.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
 
     def _remembered(self, quick: bool, max_age: float) -> tuple[str, list[Check]] | None:
         if self._cache is None or max_age <= 0:
