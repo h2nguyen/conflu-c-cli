@@ -368,9 +368,16 @@ class TestPagesAndComments(_BaseCase):
         self.assertIn(payload["id"], self.mock.comments)
 
     def test_post_footer_reply(self) -> None:
-        status, _, payload = self.client.request("POST", "/api/v2/footer-comments", json_body={"pageId": "2002", "parentCommentId": "4001", "body": {"representation": "storage", "value": "<p>Reply</p>"}})
+        # the document: a reply names its parent comment and not the page ("Do not provide" it); the reply is on the page of its parent
+        status, _, payload = self.client.request("POST", "/api/v2/footer-comments", json_body={"parentCommentId": "4001", "body": {"representation": "storage", "value": "<p>Reply</p>"}})
         self.assertEqual(status, 201)
         self.assertEqual(self.mock.comments[payload["id"]]["parentCommentId"], "4001")
+        self.assertEqual(payload["pageId"], "2002")
+
+    def test_post_footer_reply_with_a_page_is_refused(self) -> None:
+        status, _, payload = self.client.request("POST", "/api/v2/footer-comments", json_body={"pageId": "2002", "parentCommentId": "4001", "body": {"representation": "storage", "value": "<p>Reply</p>"}})
+        self.assertEqual(status, 400)
+        self.assertIn("Do not provide pageId", payload["errors"][0]["detail"])
 
     def test_post_footer_comment_unknown_page(self) -> None:
         status, _, payload = self.client.request("POST", "/api/v2/footer-comments", json_body={"pageId": "9999", "body": {"representation": "storage", "value": "<p>x</p>"}})
@@ -378,7 +385,7 @@ class TestPagesAndComments(_BaseCase):
         self.assertEqual(payload["errors"][0]["code"], "NOT_FOUND")
 
     def test_post_footer_comment_unknown_parent(self) -> None:
-        status, _, payload = self.client.request("POST", "/api/v2/footer-comments", json_body={"pageId": "2002", "parentCommentId": "4999", "body": {"representation": "storage", "value": "<p>x</p>"}})
+        status, _, payload = self.client.request("POST", "/api/v2/footer-comments", json_body={"parentCommentId": "4999", "body": {"representation": "storage", "value": "<p>x</p>"}})
         self.assertEqual(status, 400)
         self.assertIn("parentCommentId", payload["errors"][0]["detail"])
 

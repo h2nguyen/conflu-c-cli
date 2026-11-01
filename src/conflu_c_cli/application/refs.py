@@ -5,6 +5,7 @@ from typing import Any
 
 from ..domain.errors import NotFoundError, ValidationError
 from ..domain.model import Space, parse_page_id, parse_space_key
+from ..domain.structure import shown_key
 from .ports import ConfluenceGateway
 from .settings import Settings
 
@@ -58,7 +59,8 @@ def resolve_page_ref(gateway: ConfluenceGateway, settings: Settings, ref: str, *
         elsewhere = _find(gateway, other, whole)
         if elsewhere:
             found, chosen, title = elsewhere, other, whole
-    where = f" in the space {chosen.key}" if chosen else " on this site"
+    # the key of a personal space is the account id of its owner, and a title that is looked up on the whole site can be found in the space of somebody else
+    where = f" in the space {shown_key(chosen.key, chosen.type)}" if chosen else " on this site"
     if not found:
         raise NotFoundError(
             f"No current page is titled {title!r}{where}.",
@@ -66,7 +68,7 @@ def resolve_page_ref(gateway: ConfluenceGateway, settings: Settings, ref: str, *
         )
     if len(found) > 1:
         raise ValidationError(
-            f"{len(found)} pages are titled {title!r}{where}: " + ", ".join(f"{page.space_key} {page.id}" for page in found) + ".",
+            f"{len(found)} pages are titled {title!r}{where}: " + ", ".join(f"{shown_key(page.space_key)} {page.id}" for page in found) + ".",
             hint="Name the space (page:KEY/Title or --space KEY), or use the page id.",
         )
     return found[0].id

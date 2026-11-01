@@ -35,6 +35,10 @@ Aliases such as `id`, `confluence_id`, `space_key`, `parent_id` and `label` are 
 key is ignored, which is how the `version`, `updated`, `url` and `lossy` lines that `conflu export` writes pass
 through an import without harm.
 
+The file may be UTF-8 (with or without a byte order mark), UTF-16 (what Windows PowerShell 5.1 writes with `>` and
+`Out-File`) or Windows-1252; a byte order mark is dropped and a line end of Windows is fine. A file with NUL characters
+(a picture) is refused with "is not text".
+
 ## Where the title comes from
 
 The title is chosen in this order:
@@ -60,10 +64,13 @@ The page location is chosen in this order:
 For the parent page:
 
 - `parent:` in the front matter
-- `--parent PAGE`
+- `--parent ID`
 
 The front matter wins over the command line. `parent:` is optional; without it a newly created page goes below
-the home page of the chosen space.
+the home page of the chosen space. The parent may be a page, a folder, a whiteboard, a database or a smart link of
+the same space, given as an id or as the address in the browser, and `conflu export` writes the id of whatever the
+parent is. A parent only counts when a page is created: an update leaves a page where it is
+([folders and structure](folders-and-structure.md)).
 
 ## Update by `page_id`, else by title
 

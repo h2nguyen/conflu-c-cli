@@ -35,6 +35,7 @@ class InstallerCase(unittest.TestCase):
             USERPROFILE=str(self.root / "profile"),
             LOCALAPPDATA=str(self.root / "local"),
             XDG_CONFIG_HOME=str(self.root / "xdg"),
+            XDG_CACHE_HOME=str(self.root / "cache"),
         )
 
     def install(self, *extra, env=None):
@@ -181,6 +182,60 @@ class UninstallTest(InstallerCase):
         self.uninstall("--purge")
         self.assertFalse(config.exists())
         self.assertTrue((config.parent / "notes.txt").is_file())
+
+    def cache(self, base="cache"):
+        path = self.root / base / "conflu-c-cli" / "doctor-0123456789abcdef.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"at": "2026-10-15T08:00:00+00:00", "checks": []}')
+        return path
+
+    def test_purge_also_deletes_the_cache_and_its_empty_folder(self):
+        self.install()
+        config, cache = self.config(), self.cache()
+        done = self.uninstall("--purge")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertFalse(cache.exists() or cache.parent.exists())
+        self.assertFalse(config.exists() or config.parent.exists())
+
+    def test_the_cache_in_every_place_the_program_looks_goes(self):
+        self.install()
+        in_home = self.root / ".cache" / "conflu-c-cli" / "doctor-fedcba9876543210.json"
+        in_home.parent.mkdir(parents=True)
+        in_home.write_text("{}")
+        elsewhere = self.cache()
+        self.uninstall("--purge")
+        self.assertFalse(elsewhere.exists() or in_home.exists())
+
+    def test_a_cache_is_kept_without_purge(self):
+        self.install()
+        cache = self.cache()
+        done = self.uninstall()
+        self.assertTrue(cache.is_file())
+        self.assertIn("with the token and the cache", done.stdout)
+
+    def test_purge_keeps_what_else_lies_in_the_cache_folder(self):
+        self.install()
+        cache = self.cache()
+        (cache.parent / "notes.txt").write_text("not ours")
+        (cache.parent / "other.txt").write_text("not ours either")
+        self.uninstall("--purge")
+        self.assertFalse(cache.exists())
+        self.assertTrue((cache.parent / "notes.txt").is_file() and (cache.parent / "other.txt").is_file())  # only the *.json files are the program's
+
+    def test_a_dry_run_purge_removes_no_cache(self):
+        self.install()
+        cache = self.cache()
+        done = self.uninstall("--dry-run", "--purge")
+        self.assertIn(str(cache), done.stdout)
+        self.assertTrue(cache.is_file())
+
+    def test_a_folder_of_another_name_is_not_a_cache_of_the_program(self):
+        self.install()
+        other = self.root / "cache" / "another-program" / "doctor-1.json"
+        other.parent.mkdir(parents=True)
+        other.write_text("{}")
+        self.uninstall("--purge")
+        self.assertTrue(other.is_file())
 
     def test_purge_never_touches_the_folder_of_an_explicit_configuration_file(self):
         folder = self.root / "kept" / "conflu-c-cli"

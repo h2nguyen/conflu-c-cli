@@ -296,8 +296,9 @@ class PayloadsTest(unittest.TestCase):
 
     def test_title_comment_and_labels(self):
         self.assertEqual(payloads.title_payload("T"), {"status": "current", "title": "T"})
-        self.assertEqual(payloads.comment_payload("5", "<p>x</p>", "9"), {"pageId": "5", "body": {"representation": "storage", "value": "<p>x</p>"}, "parentCommentId": "9"})
-        self.assertNotIn("parentCommentId", payloads.comment_payload("5", "x"))
+        self.assertEqual(payloads.comment_payload("5", "<p>x</p>", "9"), {"parentCommentId": "9", "body": {"representation": "storage", "value": "<p>x</p>"}})
+        self.assertEqual(payloads.comment_payload("5", "x"), {"pageId": "5", "body": {"representation": "storage", "value": "x"}})
+        self.assertNotIn("pageId", payloads.comment_payload("5", "x", "9"))  # the document: do not provide the page if creating a reply
         self.assertEqual(payloads.label_payload(["a", "b"]), [{"prefix": "global", "name": "a"}, {"prefix": "global", "name": "b"}])
 
 

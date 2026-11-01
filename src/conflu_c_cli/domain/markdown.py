@@ -13,14 +13,15 @@ from string import punctuation
 from .errors import ValidationError
 
 _REFERENCE = re.compile(r'^[ \t]{0,3}\[([^\]]+)\]:[ \t]*<?([^\s>]+)>?(?:[ \t]+(["\'])(.*?)\3)?[ \t]*$')
-_ATX = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+_ATX_START = re.compile(r"^[ \t]{0,3}(#{1,6})([ \t]+)")
 _SETEXT_1 = re.compile(r"^[ \t]{0,3}=+[ \t]*$")
 _SETEXT_2 = re.compile(r"^[ \t]{0,3}-+[ \t]*$")
 _HR = re.compile(r"^[ \t]{0,3}((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$")
-_FENCE = re.compile(r"^[ \t]{0,3}((`{3,}|~{3,}))[ \t]*([^`]*)$")
-_ORDERED = re.compile(r"^(\d+)([.)])$")
-_LIST_MARKER = re.compile(r"^([ \t]*)([-+*]|\d+[.)])(?:[ \t]+(.*)|[ \t]*)$")
-_TABLE_DELIM = re.compile(r"^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*:?-+:?[ \t]*\|?[ \t]*$")
+_FENCE_START = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*")
+_ORDERED = re.compile(r"^(\d{1,9})([.)])$")
+_LIST_MARKER = re.compile(r"^([ \t]*)([-+*]|\d{1,9}[.)])(?:[ \t]+(.*)|[ \t]*)$")  # at most nine digits, as in CommonMark: `int()` refuses thousands of them
+_TABLE_DELIM_CELL = re.compile(r":?-+:?")
+_TABLE_DELIM_ONE = re.compile(r"^[ \t]*\|[ \t]*:?-+:?[ \t]*\|[ \t]*$")  # the delimiter row of a table of one column
 _ENTITY = re.compile(r"&(?:#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);")
 _URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _BARE_URL = re.compile(r"https?://[^\s<\ufff0\ufff1]+")
@@ -65,6 +66,9 @@ _ALERTS = {
 def markdown_to_storage(text: str) -> str:
     """The Confluence storage format fragment for a Markdown body."""
     text = _strip_illegal_xml(_normalize_newlines(text))
+    # U+FFF0 and U+FFF1 mark the pieces that the converter sets aside (`_apply_tokens`): in the text they would be taken for one of them, and a code span
+    # that holds `\ufff0C0\ufff1` was put into itself for ever
+    text = text.replace("\ufff0", "\ufffd").replace("\ufff1", "\ufffd")
     if not text.strip():
         return ""
     lines, references = _extract_references(text.split("\n"))
@@ -215,7 +219,7 @@ def _split_table_row(line: str) -> list[str]:
     while index < len(trimmed):
         char = trimmed[index]
         if char == "\\" and index + 1 < len(trimmed) and trimmed[index + 1] in {"|", "\\"}:
-            current.append(trimmed[index + 1])
+            current.append("|" if trimmed[index + 1] == "|" else "\\\\")  # `\|` is a pipe in the cell; `\\` stays as it is, for the reader of the inline text
             index += 2
             continue
         if char == "|":
@@ -245,6 +249,18 @@ def _table_alignments(line: str) -> list[str]:
         else:
             result.append("")
     return result
+
+
+def _is_table_delimiter(line: str) -> bool:
+    """A delimiter row of two cells or more: dashes with a colon at either end or at none, between pipes (the pipe at each end of the row is optional).
+    The cells are cut apart and looked at one by one: a pattern for the whole row backtracks over every way to split the blanks of a long one."""
+    row = line.strip(" \t")
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|"):
+        row = row[:-1]
+    cells = row.split("|")
+    return len(cells) >= 2 and all(_TABLE_DELIM_CELL.fullmatch(cell.strip(" \t")) for cell in cells)
 
 
 def _format_cell(tag: str, text: str, align: str) -> str:
@@ -326,10 +342,13 @@ def _count_preceding_backslashes(text: str, index: int) -> int:
 
 
 def _trim_bare_url(value: str) -> str:
-    while value and value[-1] in "?!.,:*_~'\"":
-        value = value[:-1]
-    while value.endswith(")") and value.count("(") < value.count(")"):
-        value = value[:-1]
+    value = value.rstrip("?!.,:*_~'\"")
+    opened, closed = value.count("("), value.count(")")
+    end = len(value)
+    while end and value[end - 1] == ")" and opened < closed:  # counted once: a count for each parenthesis that goes is the square of the run of them
+        end -= 1
+        closed -= 1
+    value = value[:end]
     if value.endswith(";") and re.search(r"&(?:#?[A-Za-z0-9]+);$", value):
         value = value[:-1]
     return value
@@ -560,9 +579,10 @@ def _render_inline(
                 out.append("&amp;")
                 index += 1
                 continue
-            url = _BARE_URL.match(source, index)
-            if allow_autolink and url and (index == 0 or source[index - 1] not in "\"'=("):
-                value = _trim_bare_url(url.group(0))
+            # the guard comes before the match: a match runs to the next blank, and a text of `(http://(http://...` would be matched to its end from every `http://`
+            if allow_autolink and (index == 0 or source[index - 1] not in "\"'=("):
+                url = _BARE_URL.match(source, index)
+                value = _trim_bare_url(url.group(0)) if url else ""
                 if value:
                     out.append(protect(f'<a href="{_escape_attr(value)}">{_escape_xml_text(value)}</a>'))
                     index += len(value)
@@ -689,6 +709,29 @@ def _render_emphasis(text: str) -> str:
     return "".join(output)
 
 
+def _atx(line: str) -> tuple[int, str] | None:
+    """The level and the title of an ATX heading line (`## Title ##`; the closing hashes and the blanks around the title are cut off), or None. The end of
+    the line is cut by hand: a pattern for it backtracks over every way to share a long run of blanks between its parts."""
+    start = _ATX_START.match(line)
+    if start is None:
+        return None
+    rest = line[start.end() :]
+    if not rest:
+        return (len(start.group(1)), "") if len(start.group(2)) >= 2 else None  # a title needs a character, and the blanks after the `#` are all there is to give
+    return len(start.group(1)), rest.rstrip(" \t").rstrip("#").rstrip(" \t") or rest[0]
+
+
+def _fence(line: str) -> tuple[str, str] | None:
+    """The fence and the info string of a line that opens a fenced code block (three backticks or tildes or more, and an info string without a backtick), or
+    None. The info string is looked at outside the pattern: the blanks in front of it could be part of it, and a pattern for both backtracks over every way to
+    share them."""
+    start = _FENCE_START.match(line)
+    if start is None:
+        return None
+    info = line[start.end() :]
+    return None if "`" in info else (start.group(1), info)
+
+
 class _MarkdownParser:
     def __init__(self, lines: list[str], references: dict[str, tuple[str, str]], *, depth: int = 0) -> None:
         if depth > _MAX_NESTING:
@@ -710,15 +753,15 @@ class _MarkdownParser:
             if indent < base_indent:
                 break
             stripped = line[indent:]
-            fence = _FENCE.match(stripped)
+            fence = _fence(stripped)
             if fence:
-                rendered, index = self._fenced_code(index, fence.group(2), len(fence.group(2)), fence.group(3))
+                rendered, index = self._fenced_code(index, fence[0], len(fence[0]), fence[1])
                 blocks.append(rendered)
                 continue
-            heading = _ATX.match(stripped)
+            heading = _atx(stripped)
             if heading:
-                level = len(heading.group(1))
-                blocks.append(f"<h{level}>{_render_inline(heading.group(2).strip(), self.references)}</h{level}>")
+                level = heading[0]
+                blocks.append(f"<h{level}>{_render_inline(heading[1].strip(), self.references)}</h{level}>")
                 index += 1
                 continue
             if index + 1 < len(self.lines) and self.lines[index + 1].strip():
@@ -793,7 +836,12 @@ class _MarkdownParser:
         stripped = line[base_indent:]
         if "|" not in stripped:
             return False
-        return bool(_TABLE_DELIM.match(next_line[base_indent:]))
+        delimiter = next_line[base_indent:]
+        if _is_table_delimiter(delimiter):
+            return True
+        # One column, as `conflu page` writes a table of one column: a pipe on each side of both rows tells it from a rule and from a line that has a pipe in it.
+        header = stripped.strip()
+        return bool(_TABLE_DELIM_ONE.match(delimiter)) and len(header) > 1 and header.startswith("|") and header.endswith("|") and len(_split_table_row(header)) == 1
 
     def _table(self, index: int, base_indent: int) -> tuple[str, int]:
         rows = [self.lines[index][base_indent:], self.lines[index + 1][base_indent:]]
@@ -868,9 +916,9 @@ class _MarkdownParser:
                     next_stripped = next_line[self._indent(next_line) :] if self._indent(next_line) >= base_indent else ""
                     if next_stripped.startswith(">"):
                         break
-                quote_lines.append("")
+                quote_lines.extend([""] * (probe - index))  # the whole run at once: every blank line of it looks at the same next line, and one by one that is the square of the run
                 blank_before = True
-                index += 1
+                index = probe
                 continue
             if self._indent(line) < base_indent:
                 break
@@ -1036,9 +1084,9 @@ class _MarkdownParser:
                 break
             stripped = line[indent:]
             if lines and (
-                _ATX.match(stripped)
+                _atx(stripped)
                 or _HR.match(stripped)
-                or _FENCE.match(stripped)
+                or _fence(stripped)
                 or stripped.startswith(">")
                 or self._list_match(line, base_indent)
                 or self._is_table(index, base_indent)

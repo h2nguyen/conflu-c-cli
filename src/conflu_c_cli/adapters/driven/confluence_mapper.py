@@ -5,6 +5,7 @@ import html
 import re
 from typing import Any
 
+from ...domain.errors import UnavailableError
 from ...domain.model import (
     Attachment,
     Comment,
@@ -29,11 +30,24 @@ def _object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _number(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+def _number(value: Any, default: int = 0, what: str = "a number") -> int:
+    """A whole number that an answer holds (a version, a size, a depth): the default for what it leaves out (`null`, an empty text), an `UnavailableError` for
+    what it holds that is no number: a word, a list, `true`, `1e999` (the decoder reads infinity) or a text of thousands of digits. The default for those would
+    show a size of 0 and a version of 1 for what is damaged, and a guard that compares versions would be satisfied by it."""
+    if value is None or value == "":
         return default
+    try:
+        if isinstance(value, bool):
+            raise TypeError("true and false are no numbers")
+        number = int(value)
+        if not -(2**63) <= number < 2**63:  # no number of the API is larger than 64 bits, and a size of 400 digits cannot be turned into a float to be shown
+            raise OverflowError("not a number of the API")
+        return number
+    except (TypeError, ValueError, OverflowError):
+        raise UnavailableError(
+            f"Confluence answered with {what} that is not a number.",
+            hint="Try again. If it stays, something between you and Confluence is changing its answers.",
+        ) from None
 
 
 def results_of(data: Any) -> list[dict[str, Any]]:
@@ -63,7 +77,7 @@ def version_from(item: Any) -> VersionInfo | None:
     if not data:
         return None
     return VersionInfo(
-        number=_number(data.get("number")),
+        number=_number(data.get("number"), what="a version number"),
         created=_text(data.get("createdAt")),
         message=_text(data.get("message")),
         minor_edit=bool(data.get("minorEdit")),
@@ -73,6 +87,12 @@ def version_from(item: Any) -> VersionInfo | None:
 
 def label_from(item: dict[str, Any]) -> Label:
     return Label(_text(item.get("name")), _text(item.get("prefix")) or "global")
+
+
+def labels_cut(data: Any) -> bool:
+    """Whether an answer that included the labels of its item holds only the first of them. The documents limit every `include-*` of a single item
+    to 50 results, and `labels.meta.hasMore` says that there are more."""
+    return _object(_object(_object(data).get("labels")).get("meta")).get("hasMore") is True
 
 
 def storage_of(item: dict[str, Any]) -> str | None:
@@ -88,13 +108,15 @@ def page_from(data: dict[str, Any], fallback_base: str = "") -> Page:
     links = _object(data.get("_links"))
     webui = _text(links.get("webui"))
     base = _text(links.get("base")) or fallback_base
+    parent_id = _text(data.get("parentId"))
     return Page(
         id=_text(data.get("id")),
         title=_text(data.get("title")),
         status=_text(data.get("status")),
         space_id=_text(data.get("spaceId")),
         space_key=space_key_from_link(webui),
-        parent_id=_text(data.get("parentId")),
+        parent_id=parent_id,
+        parent_type=_text(data.get("parentType")) if parent_id else "",
         position=data.get("position") if isinstance(data.get("position"), int) else None,
         created=_text(data.get("createdAt")),
         version=version_from(data.get("version")),
@@ -131,7 +153,7 @@ def tree_node_from(data: dict[str, Any]) -> TreeNode:
         title=_text(data.get("title")),
         type=_text(data.get("type")) or "page",
         parent_id=_text(data.get("parentId")),
-        depth=_number(data.get("depth"), 1),
+        depth=_number(data.get("depth"), 1, "a depth"),
         status=_text(data.get("status")),
         position=data.get("childPosition") if isinstance(data.get("childPosition"), int) else None,
     )
@@ -144,7 +166,7 @@ def comment_from(data: dict[str, Any], kind: str) -> Comment:
         kind=kind,
         updated=_text(version.get("createdAt")),
         body=storage_of(data) or "",
-        version=_number(version.get("number"), 1),
+        version=_number(version.get("number"), 1, "a version number"),
         author=user_from_id(version.get("authorId")),
         parent_id=_text(data.get("parentCommentId")),
         resolution=_text(data.get("resolutionStatus")),
@@ -153,16 +175,19 @@ def comment_from(data: dict[str, Any], kind: str) -> Comment:
 
 def attachment_from(data: dict[str, Any]) -> Attachment:
     links = _object(data.get("_links"))
+    version = _object(data.get("version"))
     return Attachment(
         id=_text(data.get("id")),
         title=_text(data.get("title")),
         media_type=_text(data.get("mediaType")),
-        size=_number(data.get("fileSize")),
+        size=_number(data.get("fileSize"), 0, "a file size"),
         created=_text(data.get("createdAt")),
-        version=_number(_object(data.get("version")).get("number"), 1),
+        version=_number(version.get("number"), 1, "a version number"),
         page_id=_text(data.get("pageId")),
         download_link=_text(data.get("downloadLink") or links.get("download")),
         comment=_text(data.get("comment")),
+        blog_post_id=_text(data.get("blogPostId")),
+        updated=_text(version.get("createdAt")),
     )
 
 
@@ -171,16 +196,18 @@ def attachment_from_content(data: dict[str, Any]) -> Attachment:
     extensions = _object(data.get("extensions"))
     metadata = _object(data.get("metadata"))
     container = _object(data.get("container"))
+    saved = _text(_object(data.get("version")).get("when"))
     return Attachment(
         id=_text(data.get("id")),
         title=_text(data.get("title")),
         media_type=_text(extensions.get("mediaType") or metadata.get("mediaType")),
-        size=_number(extensions.get("fileSize")),
-        created=_text(_object(data.get("version")).get("when")),
-        version=_number(_object(data.get("version")).get("number"), 1),
+        size=_number(extensions.get("fileSize"), 0, "a file size"),
+        created=saved,
+        version=_number(_object(data.get("version")).get("number"), 1, "a version number"),
         page_id=_text(container.get("id")),
         download_link=_text(_object(data.get("_links")).get("download")),
         comment=_text(extensions.get("comment") or metadata.get("comment")),
+        updated=saved,
     )
 
 
@@ -202,7 +229,8 @@ def _search_path(item: dict[str, Any], content: dict[str, Any]) -> str:
 
 
 def _search_labels(content: dict[str, Any]) -> tuple[str, ...]:
-    results = _object(_object(content.get("metadata")).get("labels")).get("results") or []
+    labels = _object(content.get("metadata")).get("labels")
+    results = labels if isinstance(labels, list) else _object(labels).get("results") or []  # the v1 document allows both: a plain array of labels and a LabelArray
     return tuple(dict.fromkeys(_text(entry.get("name")).lower() for entry in results if isinstance(entry, dict) and entry.get("name")))
 
 
@@ -221,5 +249,5 @@ def search_hit_from(item: dict[str, Any], base: str = "") -> SearchHit:
         last_modified=_text(item.get("lastModified")),
         path=_search_path(item, content),
         labels=_search_labels(content),
-        version=_number(_object(content.get("version")).get("number"), 0) or None,
+        version=_number(_object(content.get("version")).get("number"), 0, "a version number") or None,
     )

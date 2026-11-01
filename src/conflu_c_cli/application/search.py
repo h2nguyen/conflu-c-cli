@@ -6,8 +6,8 @@ from typing import Any, Sequence
 
 from ..domain import cql as cql_builder
 from ..domain.errors import ConfluCliError, UsageError
-from ..domain.model import SearchHit, parse_page_id, parse_space_key
-from ..domain.privacy import hide_hit, strip_users
+from ..domain.model import SearchHit, Space, parse_page_id, parse_space_key, space_key_from_link
+from ..domain.privacy import PERSONAL_SPACE, hide_hit, hide_space, is_personal_space, redact_query, strip_users
 from ..domain.searchterms import Term, Terms, parse_terms, terms_from_cql
 from ..domain.snippets import find_passages, lead, matched_terms
 from .paging import ensure_users_allowed
@@ -44,6 +44,54 @@ class _Found:
     total: int
     truncated: bool
     start: int
+
+
+PERSON = "user"  # what the search index calls a person among its results: `type = user` finds people, not pages
+
+
+def _object(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _is_person(item: dict[str, Any]) -> bool:
+    """A raw result that is a person (`entityType: user`)."""
+    return item.get("entityType") == PERSON or _object(item.get("content")).get("type") == PERSON
+
+
+def _shown(hit: SearchHit) -> SearchHit:
+    """A hit as it may be printed when people are not shown. A hit about a space goes through the rule of the space commands (`hide_space`): a personal
+    space is named after its owner and keyed by the owner's account id, so it comes out with the key `[hidden]`, the name `[personal space]` and no address."""
+    if hit.type == "space":
+        space = hide_space(Space(id=hit.id, key=hit.space_key, name=hit.title, url=hit.url))
+        hit = replace(hit, space_key=space.key, title=space.name, url=space.url)
+    return hide_hit(hit)
+
+
+def _in_personal_space(item: dict[str, Any]) -> bool:
+    """A raw result that is a personal space, or lies in one."""
+    inner, space, container = _object(_object(item.get("content")).get("space")), _object(item.get("space")), _object(item.get("resultGlobalContainer"))
+    return any(
+        is_personal_space(key, kind)
+        for key, kind in (
+            (inner.get("key"), inner.get("type")),
+            (space.get("key"), space.get("type")),
+            (space_key_from_link(str(item.get("url") or "")), ""),
+            (space_key_from_link(str(container.get("displayUrl") or "")), ""),
+        )
+    )
+
+
+def _shown_item(item: dict[str, Any]) -> dict[str, Any]:
+    """The raw answer for one result as it may be printed when people are not shown: its people, texts and addresses cleaned as `conflu api` cleans them,
+    and where the result is a personal space or lies in one, the name of the space (the name of its owner) replaced as `hide_space` does."""
+    shown = {**strip_users(item), "excerpt": None}
+    if _in_personal_space(item):
+        container = _object(shown.get("resultGlobalContainer"))
+        if container:
+            shown["resultGlobalContainer"] = {**container, "title": PERSONAL_SPACE, "displayUrl": ""}
+        if item.get("entityType") == "space":
+            shown["title"], shown["url"] = PERSONAL_SPACE, ""
+    return shown
 
 
 class SearchContent:
@@ -93,13 +141,19 @@ class SearchContent:
             mode, relaxed = "any", True
             query = cql_builder.content_search(terms=parsed, match="any", **options)
             found = self._find(query, limit=limit, start=start, everything=fetch_everything)
+        searched = found.total  # what the search found, people included
+        left_out = 0
+        if not with_users:
+            found, left_out = self._without_people(found)
         notes: list[str] = []
         shown = [term.display for term in parsed.used]
         if relaxed:
             notes.append(f"No page holds all of these words ({', '.join(shown)}); these pages hold some of them. `--match all` makes the search strict again.")
         if parsed.ignored:
             notes.append(f"Left out as filler: {', '.join(parsed.ignored)}. Put a word in quotes to keep it.")
-        if found.total == 0:
+        if left_out:
+            notes.append(self._left_out_note(left_out))
+        if searched == 0:
             notes.append(
                 "Nothing found. The pages may be written in another language than your words (the search does not translate): try the words "
                 "of the pages, fewer or shorter words, a wildcard such as rol*, or `--match any`. `conflu how-to find-information` says more."
@@ -113,14 +167,31 @@ class SearchContent:
         if with_users:
             return SearchResult(hits, found.total, found.start, query, found.truncated, found.raw, excerpts_shown=True, **common)
         return SearchResult(
-            [hide_hit(hit) for hit in hits],
+            [_shown(hit) for hit in hits],
             found.total,
             found.start,
-            query,
+            redact_query(query),  # the query that ran names the personal space that was searched: the key is the account id of its owner
             found.truncated,
-            [{**strip_users(item), "excerpt": None} for item in found.raw],
+            [_shown_item(item) for item in found.raw],
             **common,
         )
+
+    @staticmethod
+    def _without_people(found: _Found) -> tuple[_Found, int]:
+        """What the search index finds is not only pages: `type = user` finds people, with their names and account ids in the address. They are listed
+        only with `--with-users`, as everywhere else, so without it they are left out of the hits and of the raw answer, and counted (`total` still
+        says what was found). Returns what is left, and how many hits were left out."""
+        hits = [hit for hit in found.hits if hit.type != PERSON]
+        raw = [item for item in found.raw if not _is_person(item)]
+        return replace(found, hits=hits, raw=raw), len(found.hits) - len(hits)
+
+    def _left_out_note(self, count: int) -> str:
+        """For the person at the terminal, without a name: how many hits are missing, and why."""
+        many = count != 1
+        head = f"{count} {'hits' if many else 'hit'} about people {'were' if many else 'was'} left out"
+        if self._settings.hide_users:
+            return f"{head}: CONFLUENCE_HIDE_USERS=true keeps people out of every answer."
+        return f"{head}: people are listed only with --with-users. Add it to see them."
 
     def _find(self, query: str, *, limit: int, start: int, everything: bool) -> _Found:
         if not everything:

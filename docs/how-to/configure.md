@@ -63,9 +63,20 @@ The settings you will meet first:
 | `CONFLUENCE_INSECURE` | `true` switches certificate checks off. Diagnostic only. |
 | `CONFLUENCE_ALLOW_HTTP` | `true` accepts a plain `http://` base URL outside localhost. |
 | `CONFLUENCE_OUTPUT` | `json` makes every command that supports it print JSON. |
+| `CONFLUENCE_JSON_ENVELOPE` | `1`, `true`, `yes` or `on` in the **environment** (not a setting of the file: `conflu config set` does not know it) wraps every result and every error into one JSON object on standard output, like `--json-envelope`. |
+| `CONFLUENCE_PROFILE` | `agent` for AI agents: people hidden, JSON by default, informational messages off standard error. See [the agent profile](#the-agent-profile). |
 | `CONFLUENCE_CONNECT_TIMEOUT`, `CONFLUENCE_MAX_TIME`, `CONFLUENCE_RETRY` | Connection timeout, overall timeout and read retries. |
 
 All settings are in the [configuration reference](../reference/configuration.md).
+
+## When the configuration file cannot be read
+
+A value with a line break, or any other control character, is refused by `conflu config set` (exit code 1): the file holds one line per setting. If a line of
+the file cannot be read (it was edited by hand, or an old version wrote it), every command that needs a setting stops with the number of the line and the
+file, for example `CONFLUENCE_SPACE has unbalanced quotes in the config file (line 3 of ...)`, and asks nothing of Confluence: a file that cannot be read never
+turns into a default that is more permissive (a privacy policy that cannot be read is not "off"). These work anyway: `conflu config path`,
+`conflu config set NAME VALUE` (replaces the line), `conflu config unset NAME` (removes it), `conflu setup-token`, `conflu remove-token` and `conflu clear-space`,
+and so do `conflu help`, `conflu how-to` and `conflu version`. A line that is no setting of this program is removed in an editor. `conflu doctor` shows the line as well.
 
 ## The site address
 
@@ -74,11 +85,23 @@ Use the Confluence Cloud site root, usually `https://SITE.atlassian.net/wiki`.
 - If you set `https://SITE.atlassian.net`, the CLI adds `/wiki` automatically.
 - If you use a scoped token with Atlassian's API gateway, use
   `https://api.atlassian.com/ex/confluence/CLOUD_ID`; the CLI adds `/wiki` there as well.
-- The address must not contain credentials, a query or a fragment.
+- The address must not contain credentials, a query or a fragment. If one holds a user name or a password anyway,
+  `conflu config show` and `conflu doctor` print `https://********@host/wiki` (or nothing at all when an `@` follows the
+  host name), never the secret.
 - **A custom domain of your company does not work with an API token.** If your wiki is reached at an address of your own
   (`wiki.company.example`) instead of `SITE.atlassian.net`, Atlassian does not read API tokens on it: Confluence answers
-  403 "caller cannot access Confluence" as it does an anonymous caller. Use the gateway address instead. The cloud id
-  is shown, without a login, by `https://YOUR-DOMAIN/_edge/tenant_info`:
+  403 "caller cannot access Confluence" as it does an anonymous caller. Use the gateway address instead, and let the CLI
+  find it. It asks the host of `CONFLUENCE_BASE_URL`, and no other, for its cloud id (`/_edge/tenant_info` at the root of
+  that host: public, nothing is sent that identifies you, and a redirect is not followed) and proposes the address:
+
+  ```bash
+  conflu setup --discover             # asks before it saves; without a terminal it prints the `conflu config set` command
+  conflu setup --discover --yes       # saves without asking
+  conflu setup --discover --dry-run   # says what would be saved, saves nothing
+  ```
+
+  The gateway address goes with an API token **with scopes**; a token without scopes works on the site address
+  (`SITE.atlassian.net`), so an atlassian.net address does not have to change. To set it yourself:
 
   ```bash
   conflu config set CONFLUENCE_BASE_URL https://api.atlassian.com/ex/confluence/CLOUD_ID
@@ -145,8 +168,41 @@ conflu config set CONFLUENCE_HIDE_USERS true
 Now no command prints people, `--with-users` is refused, `conflu ping` hides who the token belongs to, raw JSON
 answers from `conflu api` are scrubbed, and storage format has mention account ids blanked when it is read.
 
+A **personal space** is a person as well: Confluence names it after its owner and keys it by `~` and the owner's account id.
+`conflu spaces`, `conflu space` and `conflu use` print it as `[hidden]` (the key) and `[personal space]` (the name), with no
+description or address, so that `conflu spaces --all` lists that such spaces exist and not whose they are. A search with
+`--search` looks at what is printed, so it cannot find a person's space by the person's name. The key that you give to
+`conflu use` is saved as you typed it: the settings file is yours. `conflu current`, `conflu config show` and `conflu doctor` print the key of a personal space as `[hidden]` like every
+other command, so the setting is the one place that holds it. `conflu spaces --with-users` and
+`conflu space KEY --with-users` show the space as Confluence names it, and the policy above refuses them. Every other command that prints the key or the
+address of a page in a personal space does the same (the key is `[hidden]`, the address ends at the page id): also where the space is only named, in the list
+of `conflu pages`, `blogposts`, `labels --space`, `tasks --space` and `templates --space` (and the space of every template), in the query that `conflu search` repeats, and in a link in
+the body of a page or a template (`page:[hidden]/Title`, and `ri:space-key` in storage format, which then is refused when it is written back). One limit stays: Confluence titles the home page
+of a personal space with the name of its owner, and a title cannot be told from a name, so that title can still appear in a `path`, an ancestor list or a title. Free text of any
+other kind (the value of a macro parameter, of a property, a label) is not searched for keys either: a key that somebody wrote into it stays as it is.
+
+## The agent profile
+
+For a program or an AI agent, one setting does the work of three:
+
+```bash
+conflu config set CONFLUENCE_PROFILE agent     # or CONFLUENCE_PROFILE=agent in the environment of the agent
+```
+
+`agent` makes `CONFLUENCE_HIDE_USERS=true` and `CONFLUENCE_OUTPUT=json` the defaults and keeps informational messages
+(not warnings, not errors) off standard error. A setting of your own still wins, even `false`: with
+`CONFLUENCE_HIDE_USERS=false` people can be shown again, which `conflu doctor` reports as a warning and
+`conflu doctor --strict-privacy` as a failure. `conflu config show` lists the profile, and the settings that it sets
+have the source `profile`. Errors are JSON as well when the settings ask for JSON, not only with `--json`.
+
 ## Timeouts and retries
 
-`CONFLUENCE_CONNECT_TIMEOUT` (default 10 seconds) and `CONFLUENCE_MAX_TIME` (120 seconds) bound a request.
+`CONFLUENCE_CONNECT_TIMEOUT` (default 10 seconds) and `CONFLUENCE_MAX_TIME` (120 seconds) bound a request; both are
+at most 86400 seconds. `CONFLUENCE_MAX_TIME` is the wait for the next bytes of an answer and, once the body has begun
+to come in, the time for all of it. It does not bound a server that sends the status line and the headers a few bytes at
+a time, each within that wait: such a request goes on until you stop it (Ctrl+C, exit code 130). Give an unattended
+run the time limit of its scheduler or shell as well.
 `CONFLUENCE_RETRY` (default 2) retries a **read** after a network error or HTTP 429, 502, 503 or 504. Writes are
 never retried, because a repeated write could create a duplicate or a second version.
+An answer is read only up to a size (64 MiB) and a number of objects (250,000 in all, 1,000 results in a list, where a
+request returns 250 at most): more is no answer of Confluence, and the command ends with exit code 7.

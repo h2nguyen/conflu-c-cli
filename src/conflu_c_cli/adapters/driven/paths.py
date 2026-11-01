@@ -67,3 +67,11 @@ def config_file(environ: Mapping[str, str]) -> Path:
         return xdg
     in_home = _config_in(active_home(environ))
     return xdg if xdg is not None and not in_home.is_file() else in_home
+
+
+def cache_directory(environ: Mapping[str, str]) -> Path:
+    """`$XDG_CACHE_HOME/conflu-c-cli`, else `.cache/conflu-c-cli` next to the configuration in use, so that the cache is not put on a
+    network drive when the configuration is local."""
+    if environ.get("XDG_CACHE_HOME"):
+        return Path(environ["XDG_CACHE_HOME"]) / APP
+    return active_home(environ) / ".cache" / APP

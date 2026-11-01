@@ -17,7 +17,7 @@ body:
     attributes:
       label: Version
       description: The output of `conflu version`.
-      placeholder: conflu-c-cli 1.0.0
+      placeholder: conflu-c-cli 1.1.0
     validations:
       required: true
   - type: input

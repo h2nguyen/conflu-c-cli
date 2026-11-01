@@ -7,8 +7,10 @@ from typing import Any
 from ..domain.drafts import PageChanges, PageDraft, normalize_labels
 from ..domain.errors import ConfluCliError, ValidationError
 from ..domain.frontmatter import parse_markdown_page, split_list, take_title_heading
-from ..domain.model import parse_page_id, parse_space_key
-from ..domain.privacy import has_redaction_marker
+from ..domain.model import PageRef, parse_page_id, parse_space_key
+from ..domain.privacy import HIDDEN, has_redaction_marker
+from .blogposts import space_key as named_space_key
+from .containers import parent_named
 from .labels import ChangeLabels
 from .ports import ConfluenceGateway, Files
 from .rendering import storage_from_input
@@ -30,6 +32,7 @@ class ImportOutcome:
     payload: Any = None
     lost: tuple[str, ...] = ()
     labels: tuple[str, ...] = ()  # the labels the import added; in a dry run, the ones it would add
+    parent: PageRef | None = None  # a page that is created: what it goes below (a page, a folder ...), when a parent was named; the title is redacted
 
 
 @dataclass
@@ -61,7 +64,13 @@ class ImportMarkdown:
         self._update = update
         self._labels = labels
 
-    def execute(self, path: str, *, space: str = "", parent: str = "", dry_run: bool = False, force: bool = False) -> ImportOutcome:
+    def named(self, space: str | None, parent: str | None) -> tuple[str, str | None]:
+        """The space to import into when a file names none (the option, else the current space) and the parent, as they were given: None is "not named",
+        and one that is empty is a mistake, also for a file that would be updated: a value that is no value is never a reason to go on."""
+        return named_space_key(space, self._settings), parent_named(parent)
+
+    def execute(self, path: str, *, space: str | None = None, parent: str | None = None, dry_run: bool = False, force: bool = False) -> ImportOutcome:
+        current, parent = self.named(space, parent)
         if not self._files.exists(path) or self._files.is_dir(path):
             raise ValidationError(f"File not found: {path}")
         parsed = parse_markdown_page(self._files.read_text(path))
@@ -87,7 +96,9 @@ class ImportMarkdown:
         message = meta.get("message", "").strip() or f"Imported from {self._files.name(path)}"
         if page_id:
             return self._update_page(path, parse_page_id(page_id), title, storage, labels, message, dry_run, force)
-        key = meta.get("space") or space or self._settings.space
+        declared = meta.get("space") or ""
+        # `export` writes [hidden] for the key of a personal space (it is the account id of its owner): a file that says so names no space, and --space applies
+        key = (declared if declared != HIDDEN else "") or current
         if not key:
             raise ValidationError(
                 f"{path} has no space and no current space is selected.",
@@ -101,7 +112,7 @@ class ImportMarkdown:
         result = self._create.execute(draft, dry_run=dry_run)
         page = result.page
         return ImportOutcome(
-            path, "created", page.id if page else "", title, page.url if page else "", dry_run, payload=result.payload, labels=tuple(result.labels)
+            path, "created", page.id if page else "", title, page.url if page else "", dry_run, payload=result.payload, labels=tuple(result.labels), parent=result.where
         )
 
     def _update_page(
@@ -146,8 +157,16 @@ class ImportMarkdownDirectory:
         self._importer = importer
 
     def execute(
-        self, directory: str, *, space: str = "", parent: str = "", dry_run: bool = False, force: bool = False, continue_on_error: bool = False
+        self,
+        directory: str,
+        *,
+        space: str | None = None,
+        parent: str | None = None,
+        dry_run: bool = False,
+        force: bool = False,
+        continue_on_error: bool = False,
     ) -> BatchImport:
+        self._importer.named(space, parent)  # an empty --space or --parent is refused before any file is read, not file by file
         if not self._files.is_dir(directory):
             raise ValidationError(f"Not a folder: {directory}")
         paths = self._files.list_matching(directory, MARKDOWN_PATTERN)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ...application.ports import DocTopic, Docs
+from ...application.ports_local import DocTopic, Docs
 from ...domain.errors import NotFoundError
 
 SKILL_PATH = Path("skills") / "conflu-c-cli" / "SKILL.md"

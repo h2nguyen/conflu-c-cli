@@ -45,8 +45,14 @@ python -m unittest discover -s tests -t .
 ```
 
 The tests need no network and no credentials. The integration tests run the real HTTP code against a mock
-Confluence Cloud server in `tests/support/mock_confluence.py`. To run one test module:
+Confluence Cloud server in `tests/support/mock_confluence.py` (the routes of every feature area are in
+`tests/support/mock_<area>.py`). No test and no tool in this repository contacts a real Confluence site. To run one test module:
 `python -m unittest tests.unit.test_domain`.
+
+On GitHub Actions the failures of a run are also written as annotations of the check (`tests/support/github_annotations.py`), with the slowest
+tests when something failed, and a run that is still going after `CONFLU_TEST_TIMEOUT` seconds (set in `.github/workflows/ci.yml`, unset on your
+computer) prints the stack of every thread and stops, which names the test that hangs. CodeQL scans `src/`, the installer and the scripts; the
+tests are left out of it (`.github/codeql/codeql-config.yml` says why).
 
 Before you open a pull request, run all three checks:
 
@@ -68,11 +74,23 @@ and [the guide to extending the CLI](docs/how-to/extend-the-cli.md); the second 
 
 A few rules that save a review round:
 
-- A command is one declarative description (`spec.Command`). Help, the parser, `conflu commands --json` and the
-  generated reference all come from it.
-- Every command that changes Confluence has `--dry-run`, and a command that returns data documents its JSON.
-- The skill in `skills/conflu-c-cli/SKILL.md` names every command; add a new one there.
+- A command is one declarative description (`spec.Command`). Help, the parser, `conflu commands --json`, the MCP server and the
+  generated reference all come from it. What a program that runs it for a model must know is declared there too
+  (`Command(for_person, local, destructive, idempotent, writes_files)`, `Arg(path, at_file, overwrites, not_a_path)`); a test
+  fails for an argument that looks like a path and does not say what it is.
+- Every command that changes Confluence has `--dry-run`, and a command that returns data documents its JSON. `tests/integration/test_json_sweep.py` runs every
+  sweep line with `CONFLUENCE_OUTPUT=json`, with `--json` and with the envelope, and fails, naming the line, for a command that breaks its JSON promise.
+- Use the REST API v2. A call to v1 needs its reason in `V1_CALLS` of the adapter and a row on the
+  [compatibility page](docs/reference/compatibility.md); no call may be missing from the two OpenAPI lists in `tests/support` or be
+  deprecated. Add every command that asks Confluence to the sweep of its area (`tests/support/sweep_<area>.py`) and refresh the page with
+  `python -m tests.support.sweep_runner`; `python scripts/update_endpoint_lists.py` renews the lists when Atlassian publishes new documents. The same sweep line
+  also checks the query parameters, the headers and the request body of its calls against `tests/support/confluence_cloud_v*_parameters.txt`: the mock answers HTTP 400 to what the document does not allow. A new option that puts a query parameter into a call needs a line that sends it: the conformance test reads the adapters and names a parameter that no line sends. Every option of a command is named by some sweep line, or has its reason in `NOT_SWEPT` of `tests/support/conformance.py`: the same test names the option that is in neither place.
+- The skill in `skills/conflu-c-cli/SKILL.md` names every command; add a new one there. So does the table of `src/conflu_c_cli/adapters/driving/cli/apis.py`: it says which
+  REST API the command uses (shown as `REST API:` in `conflu help`), and `tests/integration/test_command_apis.py` holds it to what the sweep recorded.
 - Use only Python 3.10 syntax and library. `tests/test_python_compat.py` checks it.
+- Load only what a call uses: a command's module, a use case, the code that talks to Confluence and the models of an area are imported when they are needed, not at the top
+  of the module that happens to be loaded first ("What a call loads" in [the guide](docs/how-to/extend-the-cli.md)). `tests/test_startup.py` starts the real program and
+  fails for a command that loads more, and `tests/test_undefined_names.py` for a name that a function uses and nothing imports.
 - Match the surrounding code: type hints, and short docstrings that explain why, not what.
 
 ## Tests and test data

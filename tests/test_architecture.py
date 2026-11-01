@@ -121,12 +121,20 @@ class PortsTest(unittest.TestCase):
     def test_every_port_has_a_real_adapter_and_a_test_double(self):
         import inspect
 
-        from conflu_c_cli.adapters.driven import confluence_rest, file_config, local_docs, system
-        from conflu_c_cli.application import ports
+        from conflu_c_cli.adapters.driven import confluence_rest, file_cache, file_config, local_docs, system
+        from conflu_c_cli.application import ports, ports_local
         from tests.support import fakes
 
-        abstract = {cls for _, cls in inspect.getmembers(ports, inspect.isclass) if inspect.isabstract(cls) and cls.__module__ == ports.__name__}
-        real = {base for module in (confluence_rest, file_config, local_docs, system) for _, cls in inspect.getmembers(module, inspect.isclass) if cls.__module__ == module.__name__ for base in cls.__mro__ if base in abstract}
+        abstract = {
+            cls
+            for module in (ports, ports_local)
+            for _, cls in inspect.getmembers(module, inspect.isclass)
+            if inspect.isabstract(cls) and cls.__module__ == module.__name__
+        }
+        # The ports to this computer moved to `ports_local.py` so that the command line can start without the models of every feature area: none of them may
+        # drop out of this check because of where it is defined.
+        self.assertLessEqual({"Cache", "Clock", "ConfigStore", "ConfluenceGateway", "Diagnostics", "Docs", "Files"}, {cls.__name__ for cls in abstract})
+        real = {base for module in (confluence_rest, file_cache, file_config, local_docs, system) for _, cls in inspect.getmembers(module, inspect.isclass) if cls.__module__ == module.__name__ for base in cls.__mro__ if base in abstract}
         doubles = {base for _, cls in inspect.getmembers(fakes, inspect.isclass) if cls.__module__ == fakes.__name__ for base in cls.__mro__ if base in abstract}
         self.assertEqual({cls.__name__ for cls in abstract} - {cls.__name__ for cls in real} - {"Diagnostics"}, set())  # Diagnostics lives with the command line
         self.assertEqual({cls.__name__ for cls in abstract} - {cls.__name__ for cls in doubles}, set())

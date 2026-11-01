@@ -3,6 +3,7 @@ import json
 import unittest
 
 from conflu_c_cli.adapters.driven.confluence_mapper import search_hit_from
+from conflu_c_cli.domain.errors import UnavailableError
 from tests.integration.test_end_to_end import ACCOUNT, EndToEnd
 from tests.integration.test_http_and_gateway import GatewayCase
 
@@ -52,10 +53,15 @@ class SearchHitMapperTest(unittest.TestCase):
         item = {"content": {"id": "1", "title": "T", "metadata": {"labels": {"results": [{"name": "ADR"}, {"name": "adr"}, {"name": "Docs"}, {"name": ""}, "junk"]}}, "version": {"number": 4}}}
         hit = search_hit_from(item)
         self.assertEqual((hit.labels, hit.version), (("adr", "docs"), 4))
-        for content in ({"id": "1"}, {"id": "1", "version": {}}, {"id": "1", "version": {"number": "x"}}, {"id": "1", "metadata": {"labels": None}}, {"id": "1", "metadata": "junk"}):
+        for content in ({"id": "1"}, {"id": "1", "version": {}}, {"id": "1", "version": {"number": None}}, {"id": "1", "metadata": {"labels": None}}, {"id": "1", "metadata": "junk"}):
             with self.subTest(content=content):
                 hit = search_hit_from({"content": content})
                 self.assertEqual((hit.labels, hit.version), ((), None))
+
+    def test_a_version_that_is_there_and_is_no_number_is_a_damaged_answer_and_not_nothing(self):
+        for number in ("x", [4], {"n": 4}, True, float("inf"), "9" * 5000):
+            with self.subTest(number=repr(number)[:20]), self.assertRaises(UnavailableError):
+                search_hit_from({"content": {"id": "1", "version": {"number": number}}})
 
     def test_an_odd_answer_gives_an_empty_path_not_an_error(self):
         for item in ({}, {"content": None}, {"content": {"ancestors": "junk"}}, {"content": {"ancestors": None}, "breadcrumbs": "junk"}, {"breadcrumbs": [None, 3]}):

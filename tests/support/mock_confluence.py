@@ -15,6 +15,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, quote, quote_plus, urlencode, urlparse, unquote
 
+from .conformance import classify, deprecated_parameters, request_problems
+from .mock_base import RequestError as _RequestError
+from .mock_extensions import EXTENSIONS
+from .mock_structure import StructureRoutes
+from .mock_users import UsersRoutes
+from .taint import taint_payload
+
 _ACCOUNT_ID = "5b10ac8d82e05b22cc7d4ef5"
 _AUTHOR = {
     "accountId": _ACCOUNT_ID,
@@ -40,7 +47,12 @@ _OLD_EXCERPTS = {"highlight", "indexed", "none", "highlight_unescaped", "indexed
 _OLD_SITE_PERMISSIONS = {"all", "externalCollaborator", "none"}
 _FORBIDDEN_LABEL_CHARS = set(" &?/:;'\"<>()[],@^#$%*+=\\{}|`~!")
 _SEARCH_EXPANDS = {"content.ancestors", "content.metadata.labels", "content.version", "content.space", "content.history"}
+# What the search index lists besides content: `type = user [AND user.fullname ~ "text"]` (a `*` in the text is a wildcard) and `type = space [AND space.type = personal]`.
+_OTHER_ENTITY = re.compile(
+    r'type\s*=\s*(user|space)(?:\s+AND\s+(?:user\.fullname\s*~\s*"((?:\\.|[^"\\])*)"|space\.type\s*=\s*"?(personal|global)"?))?', re.IGNORECASE
+)
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+_INCLUDED_AT_MOST = 50  # what the documents say of every `include-*` parameter of a single item: the answer holds the first 50, `meta` says if there are more
 
 
 def _iso(dt: datetime) -> str:
@@ -146,17 +158,6 @@ class _Failure:
     headers: dict[str, str] = field(default_factory=dict)
 
 
-@dataclass
-class _RequestError(Exception):
-    status: int
-    title: str
-    detail: str
-    code: str = "INVALID_REQUEST_PARAMETER"
-    old: bool = False
-    old_key: str = "BAD_REQUEST"
-    payload: Any = None
-
-
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -193,6 +194,27 @@ class MockConfluence:
         self.token = token
         self.requests: list[Recorded] = []
         self.media_requests: list[Recorded] = []
+        # What the two documents say about the calls that were made (see conformance.py). `strict` answers a call that the matching document
+        # does not list with HTTP 404; the lists below are what the tests of every command assert on.
+        self.strict = True
+        # When set, every free text of every answer carries an e-mail address (tests/support/taint.py), to find a command that prints it unredacted.
+        self.taint = False
+        self.unknown_endpoints: list[str] = []  # `GET /api/v2/x (v2 document)`: not in the document, answered with 404
+        self.deprecated_endpoints: list[str] = []  # in the document, marked deprecated there: answered, and no command may make one
+        self.used_endpoints: list[str] = []  # `GET /api/v2/pages/{id}` for every documented call, in the order they were made
+        self.outside_calls: list[str] = []  # addresses that are no REST call (a file, the tenant information): see OUTSIDE_THE_REFERENCE
+        # `strict_parameters` answers a request that the parameter file of its API does not allow (a query parameter that is not the operation's, a missing
+        # required one, a `limit` above the documented maximum, a body with a property that the schema does not list ...) with HTTP 400 and records it
+        # in `invalid_requests`; a query parameter that the document marks as deprecated is answered and recorded in `deprecated_parameters`. Off by default,
+        # so that no other test changes: the conformance sweep (tests/support/sweep_runner.py) turns it on. See `request_problems` in conformance.py.
+        self.strict_parameters = False
+        self.invalid_requests: list[str] = []  # `GET /api/v2/pages/{id} (v2 document): the query parameter x is not one of ...`
+        self.deprecated_parameters: list[str] = []  # `POST /rest/api/user/watch/space/ENG (v1 document): the query parameter username is deprecated`
+        self.seen_query_names: set[str] = set()  # the name of every query parameter that a documented call carried: which names a sweep sends (see test_conformance.py)
+        self.cloud_id = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"  # what the public tenant information of this site says
+        # The ids of content that is no page and no comment, with what Confluence calls it (`folder`, `blogpost` ...): a feature area that adds
+        # such content to the mock registers its ids here, so that `POST /content/convert-ids-to-types` knows them.
+        self.content_kinds: dict[str, str] = {}
         self.spaces: dict[str, dict[str, Any]] = {}
         self.pages: dict[str, dict[str, Any]] = {}
         self.comments: dict[str, dict[str, Any]] = {}
@@ -210,8 +232,15 @@ class MockConfluence:
         self._next_attachment = 50000
         self._clock = datetime(2026, 10, 15, 8, 0, 0, tzinfo=timezone.utc)
         self._media_secret = secrets.token_urlsafe(18)
+        self.populated = populate
         if populate:
             self._populate_defaults()
+        # The feature areas (mock_extensions.py), created last: they may add to the data above. A request is theirs before it is the mock's.
+        self.extensions = [extension(self) for extension in EXTENSIONS]
+
+    def area(self, kind: type) -> Any:
+        """The routes of one feature area, to read or set up what it holds: `mock.area(StructureRoutes)`."""
+        return next(extension for extension in self.extensions if isinstance(extension, kind))
 
     def __enter__(self) -> "MockConfluence":
         self.start()
@@ -325,7 +354,7 @@ class MockConfluence:
         if space is None:
             raise KeyError(space_key)
         parent_id = space["homepageId"] if parent_id is None else parent_id
-        if parent_id is not None and parent_id not in self.pages:
+        if parent_id is not None and parent_id not in self.pages and parent_id not in self.area(StructureRoutes).items:
             raise KeyError(parent_id)
         page_id = str(self._next_page)
         self._next_page += 1
@@ -511,12 +540,24 @@ class MockConfluence:
         return f"/download/attachments/{attachment['pageId']}/{quote(attachment['title'])}?version={version_number}&modificationDate=0&api=v2"
 
     def _next_position(self, parent_id: str | None) -> int:
-        positions = [page["position"] for page in self.pages.values() if page.get("parentId") == parent_id]
+        positions = [child["position"] for child in self._children(parent_id)]
         return max(positions) + 1 if positions else 0
 
     def _children(self, parent_id: str | None) -> list[dict[str, Any]]:
+        """What sits directly below the id: its pages and, from the structure area, its folders, whiteboards, databases and smart links."""
         children = [page for page in self.pages.values() if page.get("parentId") == parent_id]
+        children += self._structure_items(parent_id)
         return sorted(children, key=lambda item: (item["position"], int(item["id"])))
+
+    def _structure_items(self, parent_id: str | None) -> list[dict[str, Any]]:
+        areas = [extension for extension in getattr(self, "extensions", []) if isinstance(extension, StructureRoutes)]
+        return areas[0].items_below(parent_id) if areas else []
+
+    def _holder(self, holder_id: str) -> dict[str, Any]:
+        """The page, or the folder, whiteboard, database or smart link, that has this id; KeyError when there is none."""
+        if holder_id in self.pages:
+            return self.pages[holder_id]
+        return self.area(StructureRoutes).items[holder_id]
 
     def _resequence(self, parent_id: str | None) -> None:
         for index, page in enumerate(self._children(parent_id)):
@@ -524,25 +565,28 @@ class MockConfluence:
 
     def _page_ancestors(self, page_id: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
-        current = self.pages[page_id].get("parentId")
+        current = self._holder(page_id).get("parentId")
         while current is not None:
-            page = self.pages[current]
-            items.append(page)
-            current = page.get("parentId")
+            holder = self._holder(current)
+            items.append(holder)
+            current = holder.get("parentId")
         items.reverse()
         return items
 
     def _is_descendant(self, page_id: str, candidate_parent: str) -> bool:
-        current = self.pages[candidate_parent].get("parentId")
+        current = self._holder(candidate_parent).get("parentId")
         while current is not None:
             if current == page_id:
                 return True
-            current = self.pages[current].get("parentId")
+            current = self._holder(current).get("parentId")
         return False
 
 
 class _BaseHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # An answer goes out in two writes (the headers, the body). With Nagle's algorithm the second waits for the acknowledgement of the first, which
+    # a client on a kept connection may hold back for up to 40 ms on Linux: an answer could wait that long, and a run of the suite gives about 20,000.
+    disable_nagle_algorithm = True
     confluence: MockConfluence
 
     def log_message(self, *args: object) -> None:
@@ -564,6 +608,8 @@ class _BaseHandler(BaseHTTPRequestHandler):
         raise NotImplementedError
 
     def _json_bytes(self, payload: Any) -> bytes:
+        if self.confluence.taint:
+            payload = taint_payload(payload)
         return json.dumps(payload).encode("utf-8")
 
     def _reply_json(self, status: int, payload: Any = None, headers: dict[str, str] | None = None) -> None:
@@ -576,7 +622,7 @@ class _BaseHandler(BaseHTTPRequestHandler):
         if compress:
             self.send_header("Content-Encoding", "gzip")
         for name, value in (headers or {}).items():
-            self.send_header(name, value)
+            self.send_header(name, str(value).replace("\r", "").replace("\n", ""))  # a line break would end the header and start another
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
@@ -586,7 +632,7 @@ class _BaseHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         for name, value in (headers or {}).items():
-            self.send_header(name, value)
+            self.send_header(name, str(value).replace("\r", "").replace("\n", ""))
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
@@ -825,14 +871,14 @@ class _BaseHandler(BaseHTTPRequestHandler):
         model = {
             "id": page["id"],
             "status": page["status"],
-            "title": page["title"],
+            "title": page["title"] if version_number is None else version.get("title", page["title"]),  # an earlier version may carry the title it had
             "spaceId": page["spaceId"],
             "position": page["position"],
             "authorId": page["authorId"],
             "ownerId": page["ownerId"],
             "lastOwnerId": page["ownerId"],
             "createdAt": page["createdAt"],
-            "parentType": "page",
+            "parentType": self.confluence.content_kinds.get(page["parentId"], "page") if page.get("parentId") else None,
             "_links": self.confluence._page_links(page),
         }
         model["parentId"] = page.get("parentId")
@@ -849,7 +895,17 @@ class _BaseHandler(BaseHTTPRequestHandler):
         elif body_format == "atlas_doc_format":
             raise _RequestError(400, "Invalid request parameter", "body-format atlas_doc_format is not implemented by this mock")
         if include_labels:
-            model["labels"] = {"results": [self._label_model(page["id"], label) for label in page["labels"]]}
+            # The document: "The number of results will be limited to 50 ... A `meta` and `_links` property will be present to indicate if more
+            # results are available and a link to retrieve the rest of the results."
+            names = page["labels"]
+            shown = names[:_INCLUDED_AT_MOST]
+            more = len(names) > len(shown)
+            fetch = f"{self.confluence.context_path}/api/v2/pages/{page['id']}/labels"
+            model["labels"] = {
+                "results": [self._label_model(page["id"], label) for label in shown],
+                "meta": {"hasMore": more, **({"cursor": str(len(shown))} if more else {})},
+                "_links": {"self": f"{fetch}?cursor={len(shown)}" if more else fetch},
+            }
         if include_base:
             model["_links"]["base"] = self.confluence.base_url
         return model
@@ -859,7 +915,7 @@ class _BaseHandler(BaseHTTPRequestHandler):
             "id": page["id"],
             "status": page["status"],
             "title": page["title"],
-            "type": "page",
+            "type": page.get("type", "page"),  # a folder, a whiteboard ... below the page has its own
             "parentId": page["parentId"],
             "depth": depth,
             "childPosition": page["position"],
@@ -887,12 +943,20 @@ class _BaseHandler(BaseHTTPRequestHandler):
         if comment["kind"] == "footer":
             model["parentCommentId"] = comment.get("parentCommentId")
         if comment["kind"] == "inline":
+            model["parentCommentId"] = comment.get("parentCommentId")  # the answers of an inline comment name their parent as well
             model["resolutionStatus"] = comment.get("resolutionStatus") or "open"
         if body_format == "storage":
             model["body"] = self._response_body(comment["body"])
         elif body_format == "atlas_doc_format":
             raise _RequestError(400, "Invalid request parameter", "body-format atlas_doc_format is not implemented by this mock")
         return model
+
+    @staticmethod
+    def _comment_time(comment: dict[str, Any], sort: str) -> str:
+        """The time a list of comments is sorted by: when the comment was written, or when its current version was saved (a change of the text
+        or of the resolution makes a new version, and the comment keeps the date it was written on)."""
+        saved = comment["version"]["createdAt"]
+        return saved if sort.lstrip("-") == "modified-date" else comment.get("createdAt") or saved
 
     def _attachment_model(self, attachment: dict[str, Any], *, version_number: int | None = None) -> dict[str, Any]:
         version = attachment["versions"][-1] if version_number is None else next(item for item in attachment["versions"] if item["number"] == version_number)
@@ -947,9 +1011,36 @@ class _ApiHandler(_BaseHandler):
         query = parse_qs(url.query, keep_blank_values=True)
         headers = {key.lower(): value for key, value in self.headers.items()}
         self.confluence.requests.append(Recorded(method, path, query, headers, body, raw))
+        call = classify(method, path)
+        if call.outside and call.template == "/_edge/tenant_info":  # public: it is read without credentials, and the mock says what it was sent
+            self.confluence.outside_calls.append(call.key)
+            self._reply_json(200, {"cloudId": self.confluence.cloud_id})
+            return
         if not self._is_authorized():
             self._reply_json(401, self._old_error(401, "UNAUTHORIZED", "Unauthorized"))
             return
+        if call.outside:
+            self.confluence.outside_calls.append(call.key)
+        elif call.documented:
+            self.confluence.used_endpoints.append(call.key)
+            self.confluence.seen_query_names.update(query)
+            if call.deprecated:
+                self.confluence.deprecated_endpoints.append(call.text)
+        elif self.confluence.strict:
+            self.confluence.unknown_endpoints.append(call.text)
+            document = f"Confluence Cloud REST API {call.version} document" if call.version else "Confluence Cloud REST API documents"
+            self._send_error_payload(
+                _RequestError(404, "Not found", f"{method} {path} is not in the {document}", old=call.version != "v2", old_key="NOT_FOUND", code="NOT_FOUND")
+            )
+            return
+        if call.documented and self.confluence.strict_parameters:
+            self.confluence.deprecated_parameters += [f"{call.text}: the query parameter {name} is deprecated" for name in deprecated_parameters(call, query)]
+            problems = request_problems(call, query, headers, headers.get("content-type", ""), raw)
+            if problems:
+                detail = "; ".join(problems)
+                self.confluence.invalid_requests.append(f"{call.text}: {detail}")
+                self._send_error_payload(_RequestError(400, "Invalid request parameter", detail, old=call.version != "v2", old_key="BAD_REQUEST"))
+                return
         failure = self.confluence.take_failure(method, path)
         if failure is not None:
             payload = failure.body if failure.body is not None else {"message": "injected"}
@@ -962,6 +1053,9 @@ class _ApiHandler(_BaseHandler):
                 self._reply_json(400, self._old_error(400, "BAD_REQUEST", parse_error))
             return
         try:
+            for extension in self.confluence.extensions:
+                if extension.handle(self, method, path, query, parse_qsl(url.query, keep_blank_values=True), body):
+                    return
             if path.startswith("/api/v2"):
                 if method == "DELETE":
                     raise _RequestError(405, "Method not allowed", "DELETE is not supported by this mock", code="INVALID_REQUEST_PARAMETER")
@@ -1268,11 +1362,11 @@ class _ApiHandler(_BaseHandler):
         if parent_id is None and not root_level:
             parent_id = self.confluence.spaces[space_id]["homepageId"]
         if parent_id is not None:
-            parent = self.confluence.pages.get(parent_id)
+            parent = self.confluence.pages.get(parent_id) or self.confluence.area(StructureRoutes).item(parent_id)
             if parent is None:
                 raise _RequestError(400, "Invalid request body", f"Unknown parentId: {parent_id}")
             if parent["spaceId"] != space_id:
-                raise _RequestError(400, "Invalid request body", "parentId must refer to a page in the same space")
+                raise _RequestError(400, "Invalid request body", "parentId must refer to content in the same space")
         if any(page["spaceId"] == space_id and page["status"] == "current" and page["title"] == title for page in self.confluence.pages.values()):
             raise _RequestError(400, "A page with this title already exists", "A page already exists with the same TITLE in this space")
         body_value = self._parse_body_value(data.get("body")) or ""
@@ -1321,9 +1415,13 @@ class _ApiHandler(_BaseHandler):
         if "spaceId" in data and data["spaceId"] != page["spaceId"]:
             raise _RequestError(400, "Invalid request body", "spaceId cannot change")
         if "parentId" in data and data["parentId"] is not None:
-            parent = self.confluence.pages.get(data["parentId"])
+            if not isinstance(data["parentId"], str):
+                raise _RequestError(400, "Invalid request body", "parentId must be a string")
+            parent = self.confluence.pages.get(data["parentId"]) or self.confluence.area(StructureRoutes).item(data["parentId"])
             if parent is None or parent["spaceId"] != page["spaceId"]:
-                raise _RequestError(400, "Invalid request body", "parentId must refer to a page in the same space")
+                raise _RequestError(400, "Invalid request body", "parentId must refer to content in the same space")
+            if data["parentId"] == page_id or self.confluence._is_descendant(page_id, data["parentId"]):
+                raise _RequestError(400, "Invalid request body", "A page cannot be moved below itself or one of its descendants")
             if data["parentId"] != page["parentId"]:
                 old_parent = page["parentId"]
                 page["parentId"] = data["parentId"]
@@ -1362,7 +1460,9 @@ class _ApiHandler(_BaseHandler):
         if page_id not in self.confluence.pages:
             raise _RequestError(404, "Not found", f"Page not found: {page_id}", code="NOT_FOUND")
         limit = self._parse_limit(query, default=25)
-        items = [{"id": page["id"], "type": "page"} for page in self.confluence._page_ancestors(page_id)][:limit]
+        # The document: the number of results is limited by `limit`, and "additional results (if available) will be available by calling this endpoint
+        # with the ID of first ancestor in the response payload": the answer holds the nearest ancestors, from the top down.
+        items = [{"id": holder["id"], "type": holder.get("type", "page")} for holder in self.confluence._page_ancestors(page_id)][-limit:]
         self._reply_json(200, {"results": items, "_links": {"base": self.confluence.base_url}})
 
     def _get_page_descendants(self, page_id: str, query: dict[str, list[str]], query_pairs: list[tuple[str, str]]) -> None:
@@ -1464,7 +1564,9 @@ class _ApiHandler(_BaseHandler):
             raise _RequestError(400, "Invalid request parameter", "body-format atlas_doc_format is not implemented by this mock")
         self._parse_csv_enum(self._single(query, "status") or "current", "status", _COMMENT_STATUS)
         if collection == "inline-comments" and "resolution-status" in query:
-            self._parse_csv_enum(self._single(query, "resolution-status"), "resolution-status", {"resolved", "open", "dangling", "reopened"})
+            resolutions = self._parse_csv_enum(self._single(query, "resolution-status"), "resolution-status", {"resolved", "open", "dangling", "reopened"})
+        else:
+            resolutions = []
         sort = self._single(query, "sort") or "created-date"
         if sort not in _COMMENT_SORTS:
             raise _RequestError(400, "Invalid request parameter", f"Unsupported value for sort: {sort}")
@@ -1472,7 +1574,9 @@ class _ApiHandler(_BaseHandler):
         limit = self._parse_limit(query, default=25)
         kind = "footer" if collection == "footer-comments" else "inline"
         items = [comment for comment in self.confluence.comments.values() if comment["pageId"] == page_id and comment["kind"] == kind and not comment.get("parentCommentId")]
-        items.sort(key=lambda item: item["version"]["createdAt"], reverse=sort.startswith("-"))
+        if resolutions:
+            items = [comment for comment in items if (comment.get("resolutionStatus") or "open") in resolutions]
+        items.sort(key=lambda item: self._comment_time(item, sort), reverse=sort.startswith("-"))
         models = [self._comment_model(comment, body_format=body_format) for comment in items]
         page_items, links, headers = self._apply_pagination(models, path=f"/api/v2/pages/{page_id}/{collection}", query_pairs=query_pairs, offset=offset, limit=limit)
         self._reply_json(200, {"results": page_items, "_links": links}, headers)
@@ -1496,7 +1600,7 @@ class _ApiHandler(_BaseHandler):
         offset = self._parse_cursor(query)
         limit = self._parse_limit(query, default=25)
         items = [comment for comment in self.confluence.comments.values() if comment.get("parentCommentId") == comment_id and comment["kind"] == kind]
-        items.sort(key=lambda item: item["version"]["createdAt"], reverse=sort.startswith("-"))
+        items.sort(key=lambda item: self._comment_time(item, sort), reverse=sort.startswith("-"))
         models = [self._comment_model(comment, body_format=body_format) for comment in items]
         page_items, links, headers = self._apply_pagination(models, path=f"/api/v2/{collection}/{comment_id}/children", query_pairs=query_pairs, offset=offset, limit=limit)
         self._reply_json(200, {"results": page_items, "_links": links}, headers)
@@ -1505,15 +1609,21 @@ class _ApiHandler(_BaseHandler):
         data = self._require_object(body)
         if "body" not in data:
             raise _RequestError(400, "Invalid request body", "body is required")
-        page_id = data.get("pageId")
-        if not isinstance(page_id, str):
-            raise _RequestError(400, "Invalid request body", "pageId is required in this mock")
-        if page_id not in self.confluence.pages:
-            raise _RequestError(404, "Not found", f"Page not found: {page_id}", code="NOT_FOUND")
         parent_id = data.get("parentCommentId")
         if parent_id is not None:
+            # The document: `pageId` is for a comment on a page, `parentCommentId` for a reply, and the page is not given for a reply
+            # ("Do not provide if creating a reply"): the reply is on the page of its parent.
+            if "pageId" in data:
+                raise _RequestError(400, "Invalid request body", "Do not provide pageId if creating a reply: the parent comment names the page")
             if not isinstance(parent_id, str) or parent_id not in self.confluence.comments:
                 raise _RequestError(400, "Invalid request body", "parentCommentId must refer to an existing comment")
+            page_id = self.confluence.comments[parent_id]["pageId"]
+        else:
+            page_id = data.get("pageId")
+            if not isinstance(page_id, str):
+                raise _RequestError(400, "Invalid request body", "pageId is required in this mock")
+        if page_id not in self.confluence.pages:
+            raise _RequestError(404, "Not found", f"Page not found: {page_id}", code="NOT_FOUND")
         body_value = self._parse_body_value(data["body"]) or ""
         comment_id = str(self.confluence._next_comment)
         self.confluence._next_comment += 1
@@ -1574,16 +1684,16 @@ class _ApiHandler(_BaseHandler):
         for account_id in account_ids:
             user = self.confluence.users.get(account_id)
             if user is not None:
-                results.append({"accountId": user["accountId"], "accountType": "atlassian", "email": user["email"], "publicName": user["publicName"], "displayName": user["displayName"]})
+                results.append({"accountId": user["accountId"], "accountType": user.get("accountType", "atlassian"), "email": user["email"], "publicName": user["publicName"], "displayName": user["displayName"]})
         self._reply_json(200, {"results": results, "_links": {"base": self.confluence.base_url}})
 
     def _parse_cql(self, raw: str) -> tuple[list[tuple[str, Any]], str | None]:
         text = raw.strip()
         order = None
-        order_match = re.search(r"\s+ORDER\s+BY\s+lastmodified\s+(ASC|DESC)\s*$", text, re.I)
-        if order_match:
-            order = order_match.group(1).upper()
-            text = text[: order_match.start()].strip()
+        pieces = text.rsplit(None, 4)  # what comes before, and the four words of `ORDER BY lastmodified ASC`
+        if len(pieces) == 5 and [word.upper() for word in pieces[1:3]] == ["ORDER", "BY"] and pieces[3].lower() == "lastmodified" and pieces[4].upper() in ("ASC", "DESC"):
+            order = pieces[4].upper()
+            text = pieces[0].strip()
         parts: list[str] = []
         current: list[str] = []
         in_quotes = False
@@ -1619,7 +1729,7 @@ class _ApiHandler(_BaseHandler):
             if match:
                 clauses.append(("type", {match.group(1).lower()}))
                 continue
-            match = re.fullmatch(r"type\s+in\s*\((.+)\)", part, re.I)
+            match = re.fullmatch(r"type\s+in\s*\(([^()]+)\)", part, re.I)
             if match:
                 values = []
                 for token in match.group(1).split(","):
@@ -1629,24 +1739,24 @@ class _ApiHandler(_BaseHandler):
                     values.append(token)
                 clauses.append(("type", set(values)))
                 continue
-            match = re.fullmatch(r'space\s*=\s*"((?:\\.|[^"])*)"', part, re.I)
+            match = re.fullmatch(r'space\s*=\s*"((?:\\.|[^"\\])*)"', part, re.I)
             if match:
                 clauses.append(("space", bytes(match.group(1), "utf-8").decode("unicode_escape")))
                 continue
-            match = re.fullmatch(r'text\s*~\s*"((?:\\.|[^"])*)"', part, re.I)
+            match = re.fullmatch(r'text\s*~\s*"((?:\\.|[^"\\])*)"', part, re.I)
             if match:
                 clauses.append(("text", _text_terms(match.group(1))))
                 continue
-            match = re.fullmatch(r'\(\s*(text\s*~\s*"(?:\\.|[^"])*"(?:\s+OR\s+text\s*~\s*"(?:\\.|[^"])*")+)\s*\)', part, re.I)
+            match = re.fullmatch(r'\(\s*(text\s*~\s*"(?:\\.|[^"\\])*"(?:\s+OR\s+text\s*~\s*"(?:\\.|[^"\\])*")+)\s*\)', part, re.I)
             if match:
-                values = re.findall(r'text\s*~\s*"((?:\\.|[^"])*)"', match.group(1))
+                values = re.findall(r'text\s*~\s*"((?:\\.|[^"\\])*)"', match.group(1))
                 clauses.append(("textany", [term for value in values for term in _text_terms(value)]))
                 continue
-            match = re.fullmatch(r'title\s*~\s*"((?:\\.|[^"])*)"', part, re.I)
+            match = re.fullmatch(r'title\s*~\s*"((?:\\.|[^"\\])*)"', part, re.I)
             if match:
                 clauses.append(("title", bytes(match.group(1), "utf-8").decode("unicode_escape")))
                 continue
-            match = re.fullmatch(r'label\s*=\s*"((?:\\.|[^"])*)"', part, re.I)
+            match = re.fullmatch(r'label\s*=\s*"((?:\\.|[^"\\])*)"', part, re.I)
             if match:
                 clauses.append(("label", bytes(match.group(1), "utf-8").decode("unicode_escape").lower()))
                 continue
@@ -1660,6 +1770,40 @@ class _ApiHandler(_BaseHandler):
                 continue
             raise _RequestError(400, "Bad Request", f"Could not parse cql: {raw}", old=True, old_key="BAD_REQUEST")
         return clauses, order
+
+    def _search_other_entities(self, cql: str, limit: int, start: int) -> bool:
+        """The entities that the search index lists besides content (see `_OTHER_ENTITY`), answered as the older API answers them: a person has a `user`
+        and `entityType: user`, a space a `space` and `entityType: space`. False for any other query, which is for `_parse_cql`."""
+        match = _OTHER_ENTITY.fullmatch(cql.strip())
+        if match is None:
+            return False
+        if match.group(1).lower() == "user":
+            text = re.sub(r"\\(.)", r"\1", match.group(2) or "").casefold()
+            wanted = re.compile(".*".join(re.escape(part) for part in text.split("*")))
+            found = [UsersRoutes._result(user) for user in self.confluence.users.values() if wanted.search(user["displayName"].casefold())]
+        else:
+            kind = (match.group(3) or "").lower()
+            found = [self._space_result(space) for space in self.confluence.spaces.values() if not kind or space["type"] == kind]
+        shown = found[start:start + min(limit, self.confluence.page_cap)]
+        self._reply_json(200, {"results": shown, "start": start, "limit": limit, "size": len(shown), "totalSize": len(found), "cqlQuery": cql, "searchDuration": 1, "_links": {"base": self.confluence.base_url, "context": self.confluence.context_path or "/"}})
+        return True
+
+    @staticmethod
+    def _space_result(space: dict[str, Any]) -> dict[str, Any]:
+        """One result of a search for spaces: the space is its `space`; a personal space is named after its owner, in the title and in the container."""
+        key = space["key"]
+        return {
+            "space": {"id": int(space["id"]), "key": key, "name": space["name"], "type": space["type"], "status": space["status"], "_links": {"webui": f"/spaces/{key}"}},
+            "title": space["name"],
+            "excerpt": "",
+            "url": f"/spaces/{key}/overview",
+            "resultGlobalContainer": {"title": space["name"], "displayUrl": f"/spaces/{key}"},
+            "entityType": "space",
+            "iconCssClass": "aui-icon content-type-space",
+            "lastModified": space["createdAt"],
+            "friendlyLastModified": _friendly_date(space["createdAt"]),
+            "score": 1.0,
+        }
 
     def _search(self, query: dict[str, list[str]], query_pairs: list[tuple[str, str]]) -> None:
         self._require_known_query(query, {"cql", "limit", "start", "excerpt", "cursor", "next", "prev", "cqlcontext", "includeArchivedSpaces", "excludeCurrentSpaces", "sitePermissionTypeFilter", "_", "expand"}, old=True)
@@ -1686,6 +1830,8 @@ class _ApiHandler(_BaseHandler):
             unknown = [value for value in expand if value not in _SEARCH_EXPANDS]
             if unknown:
                 raise _RequestError(400, "Bad Request", f"Unsupported value for expand: {unknown[0]}", old=True, old_key="BAD_REQUEST")
+        if self._search_other_entities(cql, limit, start):
+            return
         clauses, order = self._parse_cql(cql)
         pages = [page for page in self.confluence.pages.values() if page["status"] == "current"]
         words: list[str] = []

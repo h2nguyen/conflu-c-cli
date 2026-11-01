@@ -47,6 +47,10 @@ One page and everything below it:
 conflu export --page 123456 --out mirror/guide
 ```
 
+`--page` also takes a folder (or a whiteboard, a database or a smart link), by id or by the address in the browser:
+the pages below it are exported. The folder itself is not a page, so it has no file; `parent:` holds its id, `path`
+names it, and the `notes` of the result say so ([folders and structure](folders-and-structure.md)).
+
 The page-tree export follows descendants up to 10 levels deep. If the tree is deeper, the export finishes with a
 note that pages below that level were left out.
 

@@ -9,9 +9,9 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
 from conflu_c_cli.application.app import Application
-from conflu_c_cli.application.ports import Clock, ConfigStore, ConfluenceGateway, Diagnostics, DocTopic, Docs, Files
+from conflu_c_cli.application.ports import Cache, Clock, ConfigStore, ConfluenceGateway, Diagnostics, DocTopic, Docs, Files
 from conflu_c_cli.application.settings import Settings
-from conflu_c_cli.domain.errors import ConfluCliError, ConflictError, NotFoundError, ValidationError
+from conflu_c_cli.domain.errors import ConfluCliError, ConflictError, NotFoundError, RejectedError, ValidationError
 from conflu_c_cli.domain.model import (
     Attachment,
     Chunk,
@@ -27,6 +27,20 @@ from conflu_c_cli.domain.model import (
     VersionInfo,
 )
 from conflu_c_cli.version import __version__
+
+from .fakes_access import FakeAccess
+from .fakes_attachments import FakeAttachments
+from .fakes_blogposts import FakeBlogposts
+from .fakes_comments import FakeComments
+from .fakes_history import FakeHistory
+from .fakes_labels import FakeLabels
+from .fakes_properties import FakeProperties
+from .fakes_setup import FakeSetup
+from .fakes_structure import FakeStructure
+from .fakes_tasks import FakeTasks
+from .fakes_templates import FakeTemplates
+from .fakes_users import FakeUsers
+from .fakes_watches import FakeWatches
 
 BASE = "https://example.atlassian.net/wiki"
 ACCOUNT = "5b10ac8d82e05b22cc7d4ef5"
@@ -67,6 +81,7 @@ def sample_page(
         space_id=space_id,
         space_key=space_key,
         parent_id=parent_id,
+        parent_type="page" if parent_id else "",
         created=CREATED,
         version=VersionInfo(version, UPDATED if version > 1 else CREATED, message, False, User(ACCOUNT)),
         author=User(ACCOUNT),
@@ -97,8 +112,24 @@ def default_pages() -> dict[str, Page]:
     return {page.id: page for page in pages}
 
 
-class FakeGateway(ConfluenceGateway):
-    """A Confluence in memory. Every call is recorded in `calls`; `errors` makes a method fail."""
+class FakeGateway(
+    FakeStructure,
+    FakeBlogposts,
+    FakeHistory,
+    FakeComments,
+    FakeLabels,
+    FakeAttachments,
+    FakeAccess,
+    FakeWatches,
+    FakeUsers,
+    FakeTasks,
+    FakeProperties,
+    FakeTemplates,
+    FakeSetup,
+    ConfluenceGateway,
+):
+    """A Confluence in memory. Every call is recorded in `calls`; `errors` makes a method fail. The feature areas are mixins
+    (`fakes_<area>.py`), each with an `_init_<area>` that sets up its state."""
 
     def __init__(self) -> None:
         self.user = ALEX
@@ -137,6 +168,8 @@ class FakeGateway(ConfluenceGateway):
         self.calls: list[tuple[Any, ...]] = []
         self.page_cap = 2
         self.next_id = 20000
+        for area in ("structure", "blogposts", "history", "comments", "labels", "attachments", "access", "watches", "users", "tasks", "properties", "templates", "setup"):
+            getattr(self, f"_init_{area}")()
 
     # -- helpers -----------------------------------------------------------------------------
 
@@ -239,12 +272,7 @@ class FakeGateway(ConfluenceGateway):
 
     def list_ancestors(self, page_id: str) -> list[PageRef]:
         self._enter("list_ancestors", page_id)
-        chain: list[PageRef] = []
-        page = self._page(page_id)
-        while page.parent_id:
-            page = self._page(page.parent_id)
-            chain.append(PageRef(page.id, page.title))
-        return list(reversed(chain))
+        return self._ancestor_refs(self._page(page_id).parent_id)
 
     def list_descendants(self, page_id: str, *, depth: int = 3, limit: int = 250, cursor: str = "") -> Chunk[TreeNode]:
         self._enter("list_descendants", page_id, depth, limit, cursor)
@@ -254,9 +282,9 @@ class FakeGateway(ConfluenceGateway):
         for current in range(1, depth + 1):
             following: list[str] = []
             for parent in level:
-                for position, page in enumerate(sorted((p for p in self.pages.values() if p.parent_id == parent), key=lambda p: p.title)):
-                    found.append(TreeNode(page.id, page.title, "page", parent, current, "current", position))
-                    following.append(page.id)
+                for position, (item_id, title, type_) in enumerate(self._tree_children(parent)):
+                    found.append(TreeNode(item_id, title, type_, parent, current, "current", position))
+                    following.append(item_id)
             level = following
         return self._chunk(found, cursor, limit)
 
@@ -273,6 +301,7 @@ class FakeGateway(ConfluenceGateway):
             raise ValidationError("Unknown space")
         parent_id = payload.get("parentId") or space.homepage_id
         page = sample_page(self._new_id(), payload["title"], space_id=space.id, space_key=space.key, parent_id=parent_id, body=payload["body"]["value"], labels=())
+        page.parent_type = self._parent_type(parent_id)
         self._save_version(page, 1)
         self.pages[page.id] = page
         return self._copy(page, True)
@@ -285,6 +314,8 @@ class FakeGateway(ConfluenceGateway):
         if number != expected:
             raise ConflictError("Confluence reports a conflict (HTTP 409): Version conflict.")
         page.title, page.body = payload["title"], payload["body"]["value"]
+        if payload.get("parentId"):  # the page is moved below another parent (a page, a folder ...)
+            page.parent_id, page.parent_type = payload["parentId"], self._parent_type(payload["parentId"])
         self._save_version(page, number, payload["version"].get("message", ""))
         return self._copy(page, True)
 
@@ -299,6 +330,7 @@ class FakeGateway(ConfluenceGateway):
         self._enter("move_page", page_id, position, target_id)
         page, target = self._page(page_id), self._page(target_id)
         page.parent_id = target.id if position == "append" else target.parent_id
+        page.parent_type = "page" if position == "append" else target.parent_type
 
     # -- comments ----------------------------------------------------------------------------
 
@@ -316,9 +348,12 @@ class FakeGateway(ConfluenceGateway):
 
     def add_comment(self, payload: dict[str, Any]) -> Comment:
         self._enter("add_comment", payload)
-        page_id = payload["pageId"]
+        parent_id = payload.get("parentCommentId", "")
+        if parent_id and "pageId" in payload:  # the document: "Do not provide" the page if creating a reply
+            raise RejectedError("Confluence refused the request (HTTP 400): do not provide pageId when creating a reply.", details={"status": 400})
+        page_id = self._find_comment(parent_id)[0] if parent_id else payload["pageId"]  # an answer is on the page of its parent
         self._page(page_id)
-        comment = Comment(self._new_id(), "footer", "2026-10-15T08:00:00.000Z", payload["body"]["value"], 1, ALEX, payload.get("parentCommentId", ""))
+        comment = Comment(self._new_id(), "footer", "2026-10-15T08:00:00.000Z", payload["body"]["value"], 1, ALEX, parent_id)
         self.comments.setdefault(page_id, []).append(comment)
         return comment
 
@@ -365,12 +400,13 @@ class FakeGateway(ConfluenceGateway):
         items = self.attachments.setdefault(page_id, [])
         existing = next((item for item in items if item.title == filename), None)
         if existing is not None:
-            attachment = dataclasses.replace(existing, version=existing.version + 1, size=len(data), comment=comment)
+            attachment = dataclasses.replace(existing, version=existing.version + 1, size=len(data), comment=comment, updated="2026-10-15T08:00:00.000Z")
             items[items.index(existing)] = attachment
         else:
-            attachment = Attachment(f"att{self._new_id()}", filename, "application/octet-stream", len(data), "2026-10-15T08:00:00.000Z", 1, page_id, f"/download/attachments/{page_id}/{filename}", comment)
+            attachment = Attachment(f"att{self._new_id()}", filename, "application/octet-stream", len(data), "2026-10-15T08:00:00.000Z", 1, page_id, f"/download/attachments/{page_id}/{filename}", comment, "", "2026-10-15T08:00:00.000Z")
             items.append(attachment)
         self.attachment_data[attachment.id] = data
+        self.attachment_version_data[(attachment.id, attachment.version)] = data  # the versions that came before stay readable
         return attachment
 
     def download_attachment(self, attachment: Attachment) -> bytes:
@@ -389,6 +425,24 @@ class FakeGateway(ConfluenceGateway):
     def request(self, method: str, path: str, body: Any = None) -> Any:
         self._enter("request", method, path, body)
         return self.responses.get((method, path), {"ok": True, "user": {"accountId": ACCOUNT, "displayName": "Alex Example"}})
+
+
+class MemoryCache(Cache):
+    """Remembers what it is given. `ages` holds how old a value is, in seconds (a test sets it): a value older than the `max_age` of a
+    `get` is not given, as in the file cache. A `put` makes the value new."""
+
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+        self.ages: dict[tuple[str, str], float] = {}
+
+    def get(self, namespace: str, key: str, max_age: float) -> str | None:
+        if self.ages.get((namespace, key), 0.0) > max_age:
+            return None
+        return self.values.get((namespace, key))
+
+    def put(self, namespace: str, key: str, value: str) -> None:
+        self.values[(namespace, key)] = value
+        self.ages.pop((namespace, key), None)
 
 
 class MemoryConfigStore(ConfigStore):
@@ -521,6 +575,8 @@ def build_app(
     docs: Docs | None = None,
     diagnostics: Diagnostics | None = None,
     environ: Mapping[str, str] | None = None,
+    cache: Cache | None = None,
+    runtime: Mapping[str, str] | None = None,
 ) -> Application:
     return Application.create(
         settings=settings or default_settings(),
@@ -531,5 +587,6 @@ def build_app(
         docs=docs or FakeDocs(),
         diagnostics=diagnostics or RecordingDiagnostics(),
         environ=environ or {},
-        runtime={"version": "1.0.0", "python": "3.13"},
+        runtime=runtime or {"version": "1.0.0", "python": "3.13"},  # no `launcher`: the doctor makes no statement about the PATH
+        cache=cache,
     )

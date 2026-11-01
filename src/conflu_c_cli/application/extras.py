@@ -4,18 +4,26 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..domain.errors import UsageError, ValidationError
 from ..domain.frontmatter import parse_markdown_page
 from ..domain.markdown import markdown_to_storage
 from ..domain.privacy import strip_users
 from ..domain.storage import storage_to_markdown
-from .ports import DocTopic, Docs, Files, ConfluenceGateway
+from .ports_local import DocTopic, Docs, Files
 from .settings import Settings
+
+if TYPE_CHECKING:
+    from .ports import ConfluenceGateway  # only the raw API talks to Confluence: the documents and the conversion never load its code
 
 SKILL_FOLDER = "conflu-c-cli"
 SKILL_FILE = "SKILL.md"
+
+# What may not stand in the path of a raw call. A segment of two dots leaves the folder of the API on a server (or a proxy in front of it) that collapses
+# dot segments, and it can be written in many ways: `..`, `%2e%2e`, `.%2e`, `%2E.`, and with a path parameter (`..;x`, which some servers drop before
+# they collapse). A separator that is written as a code (`%2f`, `%5c`) or the other way round (`\`) is refused as well.
+_FORBIDDEN_IN_PATH = re.compile(r"(?:^|/)(?:\.|%2e){2}(?:;[^/]*)?(?:/|$)|%2e%2e|%2f|%5c|\\", re.IGNORECASE)
 
 
 class ReadDocs:
@@ -115,9 +123,9 @@ class RawApi:
         if "://" in text or text.startswith("//"):
             raise UsageError("The path must not contain a host.", hint="It is relative to the wiki address, for example api/v2/pages/123456.")
         text = text if text.startswith("/") else "/" + text
-        route = text.split("?", 1)[0]
-        if ".." in route.split("/") or re.search(r"%2e%2e|%2f|%5c|\\", route, re.IGNORECASE):
-            raise UsageError("The path must not contain `..` or an encoded separator.")
+        route = text.split("#", 1)[0].split("?", 1)[0]  # what is sent: no fragment, and the path before the query
+        if _FORBIDDEN_IN_PATH.search(route):
+            raise UsageError("The path must not contain `..` (written in any way, `%2e%2e` and `.%2e` too) or an encoded separator.")
         if not (route.startswith("/api/") or route.startswith("/rest/")):
             raise UsageError(
                 f"The path must start with api/ or rest/: {path}",

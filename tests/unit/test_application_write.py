@@ -68,11 +68,21 @@ class CreatePageTest(unittest.TestCase):
 
     def test_the_current_space_is_the_default_and_one_is_required(self):
         app = app_with(self.gateway, space="DOCS")
-        self.assertEqual(app.create_page.execute(self.draft(space=""), dry_run=True).payload["spaceId"], "1002")
+        self.assertEqual(app.create_page.execute(self.draft(space=None), dry_run=True).payload["spaceId"], "1002")  # none named: the current space
         with self.assertRaises(UsageError):
-            self.app.create_page.execute(self.draft(space=""))
+            self.app.create_page.execute(self.draft(space=None))  # none named and no current space
         with self.assertRaises(NotFoundError):
             self.app.create_page.execute(self.draft(space="NOPE"))
+
+    def test_a_space_or_a_parent_that_is_empty_is_a_mistake_and_not_the_default(self):
+        app = app_with(self.gateway, space="DOCS")
+        for values, message in (({"space": ""}, "The space is empty."), ({"space": "  "}, "The space is empty."), ({"parent": ""}, "The parent is empty."), ({"parent": " "}, "The parent is empty.")):
+            for dry_run in (True, False):
+                with self.subTest(values=values, dry_run=dry_run):
+                    with self.assertRaises(UsageError) as caught:
+                        app.create_page.execute(self.draft(**{"space": "ENG", **values}), dry_run=dry_run)
+                    self.assertEqual(caught.exception.message, message)
+        self.assertEqual(self.gateway.calls, [])  # nothing was asked of Confluence
 
     def test_bad_input_is_refused_before_anything_is_sent(self):
         for values in ({"title": " "}, {"title": "x" * 300}, {"labels": ["two words"]}, {"parent": "abc"}):
@@ -220,6 +230,22 @@ class MoveTest(unittest.TestCase):
         with self.assertRaises(NotFoundError):
             self.app.move_page.execute("2005", "999", dry_run=True)
 
+    def test_before_or_after_a_page_at_the_top_level_is_refused_and_below_it_is_not(self):
+        # The document of the move: "never use `before` or `after` positions when the `targetId` is a top-level page", because the page
+        # would be at the top level too, where the page tree does not show it.
+        for position in ("before", "after"):
+            for dry_run in (True, False):
+                with self.subTest(position=position, dry_run=dry_run), self.assertRaises(ValidationError) as caught:
+                    self.app.move_page.execute("2005", "2001", position=position, dry_run=dry_run)
+                self.assertIn("top level", caught.exception.message)
+                self.assertIn("--position append", caught.exception.hint)
+                self.assertEqual(caught.exception.details, {"id": "2005", "targetId": "2001", "position": position})
+        self.assertEqual(self.gateway.called("move_page"), [])
+        self.assertEqual(self.gateway.pages["2005"].parent_id, "2001")
+        self.app.move_page.execute("2005", "2001", position="append")  # below the top-level page is what the document allows
+        self.app.move_page.execute("2005", "2003", position="after")  # beside a page that has a parent is as well
+        self.assertEqual([call[2] for call in self.gateway.called("move_page")], ["append", "after"])
+
     def test_bad_requests(self):
         with self.assertRaises(ValidationError):
             self.app.move_page.execute("2005", "2005")
@@ -244,7 +270,7 @@ class CommentTest(unittest.TestCase):
 
     def test_a_reply_and_storage_format(self):
         self.app.add_comment.execute("2002", "<p>Thanks</p>", body_format="storage", reply_to="4001")
-        self.assertEqual(self.gateway.called("add_comment")[0][1], {"pageId": "2002", "body": {"representation": "storage", "value": "<p>Thanks</p>"}, "parentCommentId": "4001"})
+        self.assertEqual(self.gateway.called("add_comment")[0][1], {"parentCommentId": "4001", "body": {"representation": "storage", "value": "<p>Thanks</p>"}})
 
     def test_a_dry_run_proves_the_page_and_sends_nothing(self):
         result = self.app.add_comment.execute("2002", "x", dry_run=True)

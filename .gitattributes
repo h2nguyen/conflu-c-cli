@@ -3,6 +3,7 @@
 *.py text eol=lf
 *.cmd text eol=crlf
 *.md text eol=lf
+*.txt text eol=lf
 *.yml text eol=lf
 LICENSE text eol=lf
 VERSION text eol=lf

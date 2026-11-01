@@ -26,7 +26,8 @@ What it does:
    `PYTHONPATH` cannot interfere) and with UTF-8 (`-X utf8`), whatever the console encoding.
 3. Precompiles the program, starts it once and checks that it reports the version it just installed.
 
-It never touches your configuration (`~/.config/conflu-c-cli`) unless you uninstall with `--purge`.
+It never touches your configuration (`~/.config/conflu-c-cli`) or the cache (`~/.cache/conflu-c-cli`) unless you uninstall
+with `--purge`.
 
 **Why local.** Python reads many files every time it starts. On a network home drive that is noticeably slower
 than on a local disk, so the program does not go into `~` on Windows. The launchers are tiny and stay in
@@ -40,7 +41,7 @@ than on a local disk, so the program does not go into `~` on Windows. The launch
 | `--python PATH` | Let the launchers start this Python instead of the one running the installer. |
 | `--force` | Replace a launcher that is not from this program, and move a foreign installation folder aside. |
 | `--uninstall` | Remove the program and the launchers (see below). |
-| `--purge` | With `--uninstall`: also delete the configuration file and related config folders the program owns. |
+| `--purge` | With `--uninstall`: also delete the configuration file and the cache files (`~/.cache/conflu-c-cli`), and the folders that are empty after that. |
 
 ## Which home folder
 
@@ -58,14 +59,24 @@ ways, from the least to the most invasive:
    `python "$env:LOCALAPPDATA\conflu-c-cli\conflu.py" version` (PowerShell) or
    `python "%LOCALAPPDATA%\conflu-c-cli\conflu.py" version` (cmd).
 2. **Put the launchers where every Windows shell looks already.** The installer prints this when it applies, for
-   example `python install.py --bin-dir "C:\Users\YOU\AppData\Local\Microsoft\WindowsApps"`.
+   example `python install.py --bin-dir "$env:LOCALAPPDATA\Microsoft\WindowsApps"` (PowerShell). It also prints the exact
+   command for a folder on the `PATH` that you can write to and that already holds the launcher of the sibling `jira`
+   CLI, when there is one.
 3. **Add `~/bin` to the user `PATH`** (Windows Settings, search for environment variables).
 
 Open a new terminal, and restart VS Code, after you change the `PATH`: running programs keep the old one. A
-coding agent that works in PowerShell needs one of these; see [use with AI agents](use-with-ai-agents.md).
+person who works in PowerShell needs one of these; a coding agent needs none (the first way is its way, see below and [use with AI agents](use-with-ai-agents.md)).
 
 The launcher is a `.cmd` file on purpose: a company policy such as PowerShell `AllSigned` blocks `.ps1`
-scripts, but not `.cmd`.
+scripts, but not `.cmd`. `conflu doctor` has a check `launcher` that says where `conflu` is found on the `PATH` of
+the shell, or warns that it is not and prints the install command.
+
+**The launchers are for people at a shell, not for programs.** A program that starts commands from an argument list (an agent
+harness, a tool call) runs `python "<install folder>\conflu.py" ARGS` instead (the first way above, with the folder written out for your shell),
+which also needs no `PATH`. The reason is `conflu.cmd`: cmd.exe splits the command line before a batch file runs, so an argument that holds a
+quote can run a second command, and no line of the batch file can prevent that. Python reads its arguments from the command line itself. The hint
+of the `launcher` check of `conflu doctor` names this command for your installation; [use with AI agents](use-with-ai-agents.md#windows-the-shell-the-agent-uses)
+says more.
 
 ## Update
 
@@ -75,6 +86,13 @@ is replaced completely, the configuration stays. Afterwards:
 ```bash
 conflu version
 conflu doctor
+```
+
+If you installed the skill for an AI agent (`conflu skill install`), install it again: the skill in the folder of the agent is a **copy**, and it stays the one of the old
+version, so the agent would not know the new commands. It differs from the new one, so the command asks for `--force`; use the same `--dir` as the first time:
+
+```bash
+conflu skill install --dir ~/.copilot/skills --force
 ```
 
 If you changed the Python interpreter, run the installer with the interpreter you want the launchers to remember.
@@ -104,8 +122,9 @@ python install.py --uninstall --dry-run  # shows what would be removed
 
 The uninstaller removes only what it recognises as this program: an installation folder it created and the
 launchers that carry the installer's signature **and start that installation**. With `--purge` it deletes the
-configuration file in every normal location the program looks in, and then a standard config folder only when
-nothing else is left in it. The folder named directly by `CONFLUENCE_CONFIG_FILE` is never removed as a whole.
+configuration file in every normal location the program looks in, the `*.json` cache files in the cache folders of
+the program, and then a standard config or cache folder only when nothing else is left in it. The folder named directly
+by `CONFLUENCE_CONFIG_FILE` is never removed as a whole.
 
 ## Installed documentation
 

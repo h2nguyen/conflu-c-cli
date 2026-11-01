@@ -12,8 +12,18 @@ open only the section that answers the question, and say where the answer came f
 | the title of a page | `conflu page "page:KEY/Title" --outline` |
 | a link that a page showed as `[text](page:KEY/Title)` | `conflu page "page:KEY/Title"` |
 | an address from a browser, a ticket or the code | `conflu page "https://example.atlassian.net/wiki/spaces/KEY/pages/123456/Title" --outline` |
-| the area, not the page | `conflu tree PAGE --depth 2` or `conflu pages --space KEY --all` |
+| the area, not the page | `conflu tree ID --depth 2` (a page or a folder) or `conflu pages --space KEY --all` |
+| what is directly below a folder | `conflu folder ID --children` (the address of a folder in the browser has its id; [folders and structure](folders-and-structure.md)) |
 | a label or a date | `conflu search --space KEY --label adr --since 2026-10-01` |
+| the labels that a space uses | `conflu labels --space KEY --all` |
+| what was said lately on a page | `conflu comments PAGE --inline --since 2d --last 5` ([comments and labels](comments-and-labels.md)) |
+| several pages at once | `conflu page 123456 123457 123458 --outline` (one request) |
+| an earlier version of a page, or what an edit changed | `conflu page 123456 --version 3`, `conflu diff 123456 --from 3` ([history and restore](history-and-restore.md)) |
+| a blog post | `conflu blogposts --space KEY`, `conflu blogpost ID` ([blog posts](blog-posts.md)) |
+| the text of an attachment | `conflu download ATTACHMENT_ID --text` ([attachments](attachments.md)) |
+| whether a page is restricted, and how many users and groups may read or edit it | `conflu restrictions ID` ([access and restrictions](access-and-restrictions.md)) |
+| what my account may do with a page | `conflu permissions ID --only update` |
+| who a person is, by name or by account id | `conflu users search NAME --with-users`, `conflu users lookup ID --with-users` ([watches and users](watches-and-users.md)) |
 | nothing yet, and the answer may be in the code or in the pages | `conflu export --space KEY --out tmp/confluence/KEY`, then your file search over both (section 4) |
 
 ## 2. Search that works for questions
@@ -22,7 +32,16 @@ open only the section that answers the question, and say where the answer came f
 
 - **Filler words are left out**, English and German (`how do I request an SSO group for QA?` searches for `request SSO group QA`), and so is the
   punctuation at the end of a word (`QA?`). The answer says what was left out (`ignored`). A word in quotes is never left out.
-- **`"a phrase in quotes"`** must occur as it stands. **Case does not matter**, **stems match** (`groups` finds `group`), and **`*`** is a wildcard (`rol*`).
+- **`"a phrase in quotes"`** must occur as it stands, and so does **`--phrase 'exact words'`** (repeat it for several phrases), which needs no double quote to
+  type. **Case does not matter**, **stems match** (`groups` finds `group`), and **`*`** is a wildcard (`rol*`).
+- **Several words need no quotes**: `conflu search story points reference --space KEY` is the text `story points reference`. The words must stand together
+  (before or after the options).
+- **The text can come from a file or from a pipe.** A file is the form that survives Windows PowerShell 5.1, which removes double quotes inside an argument:
+  `conflu search '@question.txt'` (single quotes: a bare `@name` is splatting in PowerShell; the CLI reads UTF-8, UTF-16 and Windows-1252 itself). `conflu search -`
+  reads standard input, which is safe for ASCII only in Windows PowerShell 5.1: it turns every other character of a piped text into `?` before the CLI sees it.
+  A search text that starts with `@` is read from the file of that name **when there is one**; when there is none it is searched for as text (`@alex`,
+  `@example.com`) and a warning says so, so that a mistyped file name does not go unnoticed. To search for the text even when such a file exists, put a space in front of it or
+  give it with `--phrase`. `--cql '@query.txt'` always names a file (a CQL never starts with `@`).
 - **Every word must occur** (`--match all`). When no page holds all of them, the search is repeated for the pages that hold **some** of them
   and the answer says so (`relaxed: true`, `match: "any"`): `--match auto`, the default. `--match any` asks for that directly, `--match all` never relaxes.
 - **The search does not translate.** If the pages are in English, ask in English: `Rollen` finds nothing where `roles` finds four pages.
@@ -53,6 +72,19 @@ search index cannot do that, because the index writes the name of a mentioned pe
 | an exact phrase | `type = page AND text ~ "\"access group\""` |
 
 `text ~ "a b"` means both words. Without a space or a filter the whole site is searched.
+
+A query with double quotes is the one that PowerShell 5.1 breaks: put it in a file and pass `--cql '@query.txt'` (a pipe with `--cql -` works for ASCII only in that shell). A search text or a
+query that comes from a file or from standard input may hold at most 1 MiB. A `&` in a
+raw call through `conflu api` is another trap: use `--param KEY=VALUE` instead of writing it into the path.
+
+**People and spaces in a search.** A search can find people and spaces (`--cql 'type = user ...'`, `--type any`). The CLI lists no person unless you add
+`--with-users`: it says in `notes` how many hits it left out and never who. A personal space is shown as `[personal space]` with the key `[hidden]` (also in the `cql` that the JSON repeats, which is the query
+that ran, and in the links of a page that `conflu page` shows as `page:[hidden]/Title`), and
+`CONFLUENCE_HIDE_USERS=true` refuses `--with-users`. To look for a person on purpose use `conflu users search NAME --with-users`.
+
+**Shape the list.** `conflu search roles --space KEY --select id,title,path --json` keeps only those keys of every hit; `--format tsv|md|table` prints the hits as
+a table for a person or a file (the options are the same on `pages`, `spaces`, `versions`, `labels`, `attachments` and `tree`; `comments` calls the layout
+`--list-format`).
 
 ## 3. Read only what you need
 
@@ -91,8 +123,8 @@ where it comes from. Keep the folder out of Git (`tmp/` usually is) and treat it
 - **Tool descriptions.** `conflu commands --format mcp` prints the read-only commands as tool descriptions in the shape of an MCP `tools/list` answer: a name
   (`conflu_search`), a description that begins with when to use it, a JSON Schema for the input, annotations (read-only, destructive, idempotent) and, under
   `_meta.conflu`, how a call becomes a command line (the positional arguments, then the flags, then `--json`). `--only write` and `--only all` add the tools that
-  change Confluence. Commands for the person (token, settings, default space) and the raw `api` are never listed. No MCP server ships with the CLI; the
-  descriptions can be handed to a tool-calling model, or to a small server that runs the commands.
+  change Confluence. Commands for the person (token, settings, selecting the default space) and the raw `api` are never listed. `conflu mcp` serves the same tools to a client
+  that speaks the Model Context Protocol ([MCP server](mcp-server.md)); without such a client the descriptions can be handed to a tool-calling model.
 - **Documentation on demand.** `conflu how-to` lists the guides that ship with the tool, `conflu how-to find-information` prints this one, and
   `conflu help COMMAND` says when to use a command and when another one is better.
 - **A loop that spends little:**

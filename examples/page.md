@@ -1,7 +1,6 @@
 ---
 title: Team status update
 space: ENG
-parent: 123456
 labels: status, weekly
 message: Imported from examples/page.md
 ---

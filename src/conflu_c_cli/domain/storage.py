@@ -10,11 +10,19 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 
 from .errors import ValidationError
-from .privacy import is_profile_link
+from .privacy import HIDDEN, is_personal_space, is_profile_link, redact_text
 
 _MAX_NESTING = 100
+_MAX_TABLE_CELLS = 2_000_000  # rows times columns, the short rows filled up: a table of 5 000 rows and 5 000 columns comes from a body of 100 KB and is 75 MB of Markdown
 _PUNCT_ESCAPES = "\\`*_[]<>|"
+_INLINE_ESCAPES = {ord(char): "\\" + char for char in _PUNCT_ESCAPES}
 _ABSOLUTE_URL = re.compile(r"^(?:https?|mailto|ftp|ftps|tel):", re.IGNORECASE)
+_ENTITY = re.compile(r"&(?:#?[A-Za-z0-9]+);")
+_WHOLE_NUMBER = re.compile(r"\s*([+-]?)([0-9]+)\s*")
+_LARGEST_NUMBER = 999_999_999  # nine digits: the most that an attribute that counts is believed
+# What an `ac:link` can point at, and the name that a loss of it has (`link:NAME`). A page and an attachment are written as `page:...` and `attachment:...`, an
+# address as a link, a person as a mention; for every other target Markdown has no way to say where the link goes.
+_LINK_KINDS = {"ri:page": "page", "ri:attachment": "attachment", "ri:blog-post": "blogpost", "ri:space": "space", "ri:shortcut": "shortcut", "ri:content-entity": "content"}
 
 
 @dataclass(frozen=True)
@@ -33,8 +41,10 @@ def storage_to_markdown(storage: str, *, show_mentions: bool = False) -> Convert
         _check_tree_depth(root)
         renderer = _MarkdownRenderer(show_mentions=show_mentions)
         return Converted(_cleanup(renderer.render_blocks(root.children)), tuple(sorted(renderer.dropped)))
-    except RecursionError as exc:
-        raise ValidationError("nested too deeply to convert", hint="Simplify the nesting: the storage format is nested too deeply to convert.") from exc
+    except ValidationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - whatever a body does to the converter, it is a body that cannot be read, never a crash
+        raise _refused(exc) from exc
 
 
 def storage_to_text(storage: str, *, show_mentions: bool = False) -> str:
@@ -47,8 +57,17 @@ def storage_to_text(storage: str, *, show_mentions: bool = False) -> str:
         _check_tree_depth(root)
         renderer = _TextRenderer(show_mentions=show_mentions)
         return _cleanup(renderer.render_blocks(root.children))
-    except RecursionError as exc:
-        raise ValidationError("nested too deeply to convert", hint="Simplify the nesting: the storage format is nested too deeply to convert.") from exc
+    except ValidationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - see storage_to_markdown
+        raise _refused(exc) from exc
+
+
+def _refused(error: Exception) -> ValidationError:
+    """What a body that the converter cannot read becomes. The depth is said; for anything else the text of the error is left out, because it may quote the body."""
+    if isinstance(error, RecursionError):
+        return ValidationError("nested too deeply to convert", hint="Simplify the nesting: the storage format is nested too deeply to convert.")
+    return ValidationError("cannot read this body as storage format", hint="Read it as Confluence keeps it: --format storage shows the body as it is.")
 
 
 def lossy_constructs(storage: str) -> tuple[str, ...]:
@@ -57,11 +76,78 @@ def lossy_constructs(storage: str) -> tuple[str, ...]:
 
 
 def _normalize(text: str) -> str:
-    return str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return _neutralize(str(text or "").replace("\r\n", "\n").replace("\r", "\n"))
+
+
+# What makes Python's HTML parser slow is a construct that is never closed: for every `<name`, `</name`, `<!x`, `<?x`, `<!--` and `<![` that has no end it looks
+# for the end again in all that follows, so a body made of such openers takes minutes (12 000 characters of `<p ` take seconds, so do 80 000 of `<!--`). Storage
+# format is XML, where such a `<` is always closed, so one that is not is text, and it is written as `&lt;` before the parser sees it. Closed is: a tag, an end
+# tag, a declaration or an instruction has a `>` before the next `<`; a comment has a `-->` after it; a CDATA section has a `]]>`. A `<![` that is not `<![CDATA[`
+# is no XML at all, and the parser fails on some of it (`<![foo[`).
+# The inside of a comment and of a CDATA section is raw (a comment may hold anything, and code has every `<` in it), so it is not looked at. That is right where every
+# parser ends it where the text says, and Python's parsers do not agree: in some a comment ends at `--` blanks `>` or `--!>`, and a section at `]` blanks `]` blanks `>`
+# (code has `a[b[i]] > 3`), and HTML5 ends `<!-->` and `<!--->` at once; what a parser then reads as markup is what nobody has looked at. So a comment that a parser
+# may end early is dropped (nothing is made of a comment), a section that it may end early is written as the text that it holds, and `<!-->` is text.
+_REGION = re.compile(r"<!(?:(?P<cdata>\[CDATA\[)|(?P<comment>--)|(?P<section>\[))")
+_UNCLOSED = re.compile(r"<(?=[A-Za-z/?]|!(?!--|\[))(?![^<>]*>)")
+_SECTION_END = re.compile(r"\]\s*\]\s*>")
+_COMMENT_END = re.compile(r"--(?:\s|!)*>")
+
+
+def _unclosed_as_text(text: str, first: int, last: int) -> str:
+    """`text[first:last]` with each tag, end tag, declaration and instruction in it that has no `>` before the next `<` (or before `last`, which is one) written as text."""
+    return _UNCLOSED.sub("&lt;", text[first:last])
+
+
+def _neutralize(text: str) -> str:
+    """The text with each `<` that opens something that is never closed written as the text that it is (`&lt;`), so that the parser reads the body in a moment.
+    One pass: the comments and the sections are looked at one by one, and the text between them, where a tag stands, by one pattern."""
+    if "<" not in text:
+        return text
+    last_comment_end = text.rfind("-->")
+    sections_end = True  # False from the first CDATA section that never ends: no later one can end either
+    parts: list[str] = []
+    done = 0  # what lies before `done` is in `parts`
+    skip = 0  # what lies before `skip` is the inside of a comment or of a CDATA section
+    for found in _REGION.finditer(text):
+        start = found.start()
+        if start < skip:
+            continue
+        kind = found.lastgroup
+        if kind == "comment":
+            if last_comment_end < start + 4 or text.startswith((">", "->"), start + 4):
+                parts += (_unclosed_as_text(text, done, start), "&lt;")
+                done = start + 1
+                continue
+            skip = text.find("-->", start + 4) + 3
+            early = _COMMENT_END.search(text, start + 4, skip)
+            # an empty comment instead of one that a parser may end early: every parser reads it the same, and nothing that is left can join what stands around it into a tag
+            parts += (_unclosed_as_text(text, done, start), "<!---->" if early is not None and early.end() < skip else text[start:skip])
+            done = skip
+        elif kind == "cdata":
+            end = text.find("]]>", start + 9) if sections_end else -1
+            if end < 0:
+                sections_end = False  # a section that never ends is no section: its opener is text, and what follows is read as the text that it is
+                parts += (_unclosed_as_text(text, done, start), "&lt;")
+                done = start + 1
+                continue
+            skip = end + 3
+            early = _SECTION_END.search(text, start + 9, skip)
+            if early is not None and early.end() < skip:
+                lead = start - 1 if start > done and text[start - 1] == "<" else start  # a `<` in front of the code would make a tag of its first character
+                parts += (_unclosed_as_text(text, done, lead), "&lt;" * (lead < start), text[start + 9 : end].replace("&", "&amp;").replace("<", "&lt;"))
+            else:
+                parts += (_unclosed_as_text(text, done, start), text[start:skip])
+            done = skip
+        else:  # `<![` that is no CDATA section
+            parts += (_unclosed_as_text(text, done, start), "&lt;")
+            done = start + 1
+    parts.append(_unclosed_as_text(text, done, len(text)))
+    return "".join(parts)
 
 
 def _cleanup(text: str) -> str:
-    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = "\n".join(line.rstrip(" \t") for line in text.split("\n"))  # not `[ \t]+\n`: that takes the square of a run of blanks that no line end follows
     lines = text.strip().split("\n")
     cleaned: list[str] = []
     blank_run = 0
@@ -96,6 +182,17 @@ def _max_tick_run(text: str) -> int:
     return max((len(run) for run in runs), default=0)
 
 
+def _number(text: str, default: int) -> int:
+    """The whole number that an attribute (`start`, `colspan`, `rowspan`) holds. What is no number is `default`, and a number of more than nine digits is the
+    largest one of nine: a counter is written into every line that it numbers, so a start of 4 000 digits would be written a million times."""
+    found = _WHOLE_NUMBER.fullmatch(text)
+    if found is None:
+        return default
+    digits = found.group(2).lstrip("0") or "0"  # `int` of a longer text is refused by the interpreter
+    value = _LARGEST_NUMBER if len(digits) > 9 else int(digits)
+    return -value if found.group(1) == "-" else value
+
+
 def _check_tree_depth(root: _Node) -> None:
     stack: list[tuple[_Node, int]] = [(root, 0)]
     while stack:
@@ -107,23 +204,9 @@ def _check_tree_depth(root: _Node) -> None:
 
 
 def _escape_inline_markdown(text: str, *, in_table: bool = False) -> str:
-    escaped = []
-    index = 0
-    while index < len(text):
-        if text[index] == "&":
-            match = re.match(r"&(?:#?[A-Za-z0-9]+);", text[index:])
-            if match:
-                escaped.append("\\&")
-                escaped.append(match.group(0)[1:])
-                index += len(match.group(0))
-                continue
-        char = text[index]
-        if char in _PUNCT_ESCAPES or (in_table and char == "|"):
-            escaped.append("\\" + char)
-        else:
-            escaped.append(char)
-        index += 1
-    return "".join(escaped)
+    """The text with each character that means something to Markdown behind a backslash, and the `&` of what looks like a character reference too. A table
+    cell needs no more (`|` is among the characters already), so `in_table` stays as the callers say it."""
+    return _ENTITY.sub(lambda match: "\\" + match.group(0), text.translate(_INLINE_ESCAPES))
 
 
 def _escape_block_line(line: str) -> str:
@@ -249,12 +332,14 @@ class _Builder(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.root = _Node("root", {})
         self.stack = [self.root]
+        self.open: dict[str, int] = {}  # how many elements of a tag are open: an end tag of one that is not open skips the search of the stack
 
     def handle_starttag(self, tag: str, attrs) -> None:
         node = _Node(tag.lower(), {name.lower(): value or "" for name, value in attrs if name})
         self.stack[-1].children.append(node)
         if node.tag not in self.VOID:
             self.stack.append(node)
+            self.open[node.tag] = self.open.get(node.tag, 0) + 1
 
     def handle_startendtag(self, tag: str, attrs) -> None:
         node = _Node(tag.lower(), {name.lower(): value or "" for name, value in attrs if name})
@@ -262,8 +347,12 @@ class _Builder(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if not self.open.get(tag):
+            return
         for index in range(len(self.stack) - 1, 0, -1):
             if self.stack[index].tag == tag:
+                for closed in self.stack[index:]:
+                    self.open[closed.tag] -= 1
                 del self.stack[index:]
                 break
 
@@ -299,6 +388,8 @@ class _BaseRenderer:
     INLINE_NATIVE = {"strong", "em", "b", "i", "code", "a", "u", "sub", "sup", "del", "s", "strike", "time", "br"}
     BLOCK = {
         "p",
+        "div",
+        "section",
         "h1",
         "h2",
         "h3",
@@ -323,7 +414,8 @@ class _BaseRenderer:
         self.dropped: set[str] = set()
 
     def record(self, value: str) -> None:
-        self.dropped.add(value)
+        # A name can hold text of the document (a macro, an element, a kind of link): the people stay out of it, as they stay out of any text.
+        self.dropped.add(value if self.show_mentions else redact_text(value))
 
     def render_blocks(self, nodes: list[_Node]) -> str:
         blocks: list[str] = []
@@ -376,6 +468,15 @@ class _BaseRenderer:
         if node.tag not in self.HARMLESS and node.tag not in self.INLINE_NATIVE:
             self.record(f"html:{node.tag}")
         return self.render_inline_nodes(node.children, in_table=in_table)
+
+    def _name_link_targets(self, node: _Node) -> None:
+        """Names what the Markdown of an `ac:link` cannot say about where it goes: the kind of each target it has, and the anchor in it. A link to an address
+        or to a person is not named here: the first is a link in Markdown too, the second is a mention."""
+        if node.attr("ac:anchor"):
+            self.record("link:anchor")
+        for child in node.children:
+            if child.tag.startswith("ri:") and child.tag not in {"ri:url", "ri:user"}:
+                self.record("link:" + _LINK_KINDS.get(child.tag, child.tag[3:]))
 
     def _find_child(self, node: _Node, tag: str) -> _Node | None:
         for child in node.children:
@@ -511,6 +612,8 @@ class _MarkdownRenderer(_BaseRenderer):
         if node.tag in {"ac:layout", "ac:layout-section", "ac:layout-cell"}:
             self.record("layout")
             return self.render_blocks(node.children)
+        if node.tag in {"div", "section"}:  # a wrapper: its paragraphs, lists and tables are blocks, not one run of text
+            return self.render_blocks(node.children)
         if node.tag == "ac:inline-comment-marker":
             self.record("inline-comment")
             return self.render_inline_nodes(node.children)
@@ -529,6 +632,8 @@ class _MarkdownRenderer(_BaseRenderer):
         if node.tag in {"del", "s", "strike"}:
             return f"~~{self.render_inline_nodes(node.children, in_table=in_table, preserve_breaks=preserve_breaks)}~~"
         if node.tag == "code":
+            if any(child.tag != "#text" for child in node.children):
+                self.record("formatting:inline-code")  # a link, bold or the like inside code: Markdown has code that holds text and nothing else
             content = _text_content(node)
             return _markdown_code_span(content)
         if node.tag == "br":
@@ -565,6 +670,8 @@ class _MarkdownRenderer(_BaseRenderer):
             return text
         if node.tag == "a":
             href = node.attr("href")
+            if node.attr("name") or node.attr("id"):
+                self.record("anchor")  # a place that a link of the page, or of another page, jumps to: the text stays, the place does not
             if not self.show_mentions and is_profile_link(href):
                 self.record("mention")  # a link to a profile names a person, as a mention does
                 return "@user"
@@ -589,6 +696,7 @@ class _MarkdownRenderer(_BaseRenderer):
             self.record("inline-comment")
             return self.render_inline_nodes(node.children, in_table=in_table, preserve_breaks=preserve_breaks)
         if node.tag == "ac:placeholder":
+            self.record("placeholder")  # the grey hint of a template: it is text that a reader sees, and Markdown has no such text
             return ""
         if node.tag == "ac:structured-macro":
             return self._render_macro(node)
@@ -604,16 +712,17 @@ class _MarkdownRenderer(_BaseRenderer):
     def _render_ac_link(self, node: _Node, *, in_table: bool) -> str:
         label_source = self._find_child(node, "ac:plain-text-link-body") or self._find_child(node, "ac:link-body")
         label = self.render_inline_nodes(label_source.children if label_source else [], in_table=in_table)
+        self._name_link_targets(node)
         page = self._find_child(node, "ri:page")
         if page is not None:
-            self.record("link:page")
             title = page.attr("ri:content-title")
             space = page.attr("ri:space-key")
+            if not self.show_mentions and is_personal_space(space):
+                space = HIDDEN  # the key of a personal space is the account id of its owner, as the account id of a mention is the one of a person
             target = f"page:{space}/{title}" if space else f"page:{title}"
             return f"[{label or _escape_inline_markdown(title, in_table=in_table)}]({target})"
         attachment = self._find_child(node, "ri:attachment")
         if attachment is not None:
-            self.record("link:attachment")
             name = attachment.attr("ri:filename")
             return f"[{label or _escape_inline_markdown(name, in_table=in_table)}](attachment:{name})"
         url = self._find_child(node, "ri:url")
@@ -623,7 +732,6 @@ class _MarkdownRenderer(_BaseRenderer):
             return _markdown_link(text, target)
         anchor = node.attr("ac:anchor")
         if anchor:
-            self.record("link:anchor")
             return f"[{label or _escape_inline_markdown(anchor, in_table=in_table)}](#{anchor})"
         user = self._find_child(node, "ri:user")
         if user is not None:
@@ -646,7 +754,7 @@ class _MarkdownRenderer(_BaseRenderer):
 
     def _render_list(self, node: _Node, indent: int) -> str:
         ordered = node.tag == "ol"
-        counter = int(node.attr("start") or "1")
+        counter = _number(node.attr("start"), 1)
         lines: list[str] = []
         for child in node.children:
             if child.tag != "li":
@@ -810,13 +918,18 @@ class _MarkdownRenderer(_BaseRenderer):
 
     def _render_table(self, node: _Node) -> str:
         rows: list[_Node] = []
+        orphans: list[_Node] = []  # what stands in the table and is no row (a caption, say): its text goes above the table, and the element is named
         for child in node.children:
             if child.tag == "tr":
                 rows.append(child)
             elif child.tag in {"tbody", "thead", "tfoot"}:
-                rows.extend(grand for grand in child.children if grand.tag == "tr")
+                for grand in child.children:
+                    (rows if grand.tag == "tr" else orphans).append(grand)
+            elif child.tag not in {"colgroup", "col"}:
+                orphans.append(child)
+        lead = self.render_blocks([item for item in orphans if item.tag != "#text"])
         if not rows:
-            return ""
+            return lead
         if self._has_background(node):
             self.record("formatting:color")
         if self._has_text_align(node):
@@ -835,7 +948,7 @@ class _MarkdownRenderer(_BaseRenderer):
                 self.record("table:row-headers")
             current: list[str] = []
             for cell_index, cell in enumerate(cells):
-                if int(cell.attr("colspan") or "1") > 1 or int(cell.attr("rowspan") or "1") > 1:
+                if _number(cell.attr("colspan"), 1) > 1 or _number(cell.attr("rowspan"), 1) > 1:
                     merged = True
                 if self._has_background(cell):
                     self.record("formatting:color")
@@ -865,6 +978,8 @@ class _MarkdownRenderer(_BaseRenderer):
         if rich:
             self.record("table:rich-cells")
         width = max((len(row) for row in parsed), default=0)
+        if width * len(parsed) > _MAX_TABLE_CELLS:  # Markdown has no short rows: one wide row and many narrow ones is a table of the square of what the body holds
+            raise ValidationError("a table is too large to convert", hint="Read it as Confluence keeps it: --format storage shows the body as it is.")
         first_cells = [child for child in rows[0].children if child.tag in {"th", "td"}]
         has_header = bool(first_cells) and all(cell.tag == "th" for cell in first_cells)
         if not has_header:
@@ -884,7 +999,8 @@ class _MarkdownRenderer(_BaseRenderer):
         lines = ["| " + " | ".join(cell for cell in parsed[0]) + " |", "| " + " | ".join(delimiter) + " |"]
         for row in parsed[1:]:
             lines.append("| " + " | ".join(cell for cell in row) + " |")
-        return "\n".join(lines)
+        table = "\n".join(lines)
+        return f"{lead}\n\n{table}" if lead else table
 
 
 class _TextRenderer(_BaseRenderer):
@@ -912,6 +1028,8 @@ class _TextRenderer(_BaseRenderer):
         if node.tag == "ac:structured-macro":
             return self._render_macro(node)
         if node.tag in {"ac:layout", "ac:layout-section", "ac:layout-cell"}:
+            return self.render_blocks(node.children)
+        if node.tag in {"div", "section"}:
             return self.render_blocks(node.children)
         if node.tag == "ac:inline-comment-marker":
             return self.render_inline_nodes(node.children)
@@ -989,7 +1107,7 @@ class _TextRenderer(_BaseRenderer):
 
     def _render_list(self, node: _Node, indent: int) -> str:
         ordered = node.tag == "ol"
-        counter = int(node.attr("start") or "1")
+        counter = _number(node.attr("start"), 1)
         lines: list[str] = []
         for child in node.children:
             if child.tag != "li":

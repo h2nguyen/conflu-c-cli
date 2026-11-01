@@ -103,7 +103,7 @@ class DocumentationTest(unittest.TestCase):
         wanted = {
             "install-and-update", "configure", "daily-workflow", "use-with-ai-agents", "publish-markdown", "export-and-sync",
             "markdown-and-storage-format", "extend-the-cli", "troubleshooting", "release-process", "architecture", "commands",
-            "configuration", "exit-codes", "json-output",
+            "configuration", "exit-codes", "json-output", "compatibility",
         }
         self.assertTrue(wanted <= names, wanted - names)
         self.assertEqual(run_cli("how-to").code, 0)

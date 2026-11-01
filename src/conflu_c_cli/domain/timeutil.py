@@ -21,6 +21,14 @@ def parse_timestamp(text: str) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def parse_guard_time(text: str, option: str = "--if-unchanged-since") -> datetime:
+    """The time of a write guard as it was given. A value that is no time, an empty one too, is an error that names the option: it never means "no guard"."""
+    try:
+        return parse_timestamp(text)
+    except ValidationError as error:
+        raise ValidationError(f"{option}: Not an ISO 8601 timestamp: {text!r}", hint=error.hint) from error
+
+
 def ensure_unchanged_since(page_id: str, updated: str, since: str) -> None:
     """Raise a conflict when the page was changed after `since`."""
     changed_at = parse_timestamp(updated)
