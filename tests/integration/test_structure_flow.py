@@ -760,7 +760,7 @@ class PersonalSpaceTest(StructureFlow):
 
     @staticmethod
     def written(directory):
-        return {path.name: path.read_text(encoding="utf-8") for path in directory.rglob("*") if path.is_file()}
+        return {path.name: path.read_text(encoding="utf-8") for path in sorted(directory.rglob("*")) if path.is_file()}  # the order of a folder is the system's: Linux has none
 
     def test_an_export_writes_no_key_and_no_account_id_whoever_typed_the_key(self):
         for options in (("--space", PERSONAL), ("--page", self.home), ("--page", self.page), ("--page", self.folder)):
@@ -785,7 +785,10 @@ class PersonalSpaceTest(StructureFlow):
         self.assertRegex(written, rf"(?m)^url: \S+/pages/viewpage\.action\?pageId={self.page}$")
         elsewhere = self.work() / "other"
         self.cli("export", "--page", "2003", "--out", str(elsewhere))
-        self.assertRegex(next(iter(self.written(elsewhere).values())), r"(?m)^space: ENG$")
+        pages = {name: text for name, text in self.written(elsewhere).items() if name.endswith(".md")}  # the index is no page
+        self.assertEqual(sorted(pages), ["adr-0001-2004.md", "architecture-2003.md"])
+        for text in pages.values():
+            self.assertRegex(text, r"(?m)^space: ENG$")
 
     def test_the_request_names_the_space_by_the_key_that_was_typed(self):
         self.cli("export", "--space", PERSONAL, "--out", str(self.work() / "export"))

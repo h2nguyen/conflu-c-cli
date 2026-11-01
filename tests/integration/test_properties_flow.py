@@ -4,6 +4,7 @@ import unittest
 
 from conflu_c_cli.domain.properties import CUT_MARKER
 from tests.integration.test_end_to_end import ACCOUNT, EndToEnd
+from tests.support import deep_json
 from tests.support.fakes import FakeGateway
 from tests.support.mock_properties import PropertiesRoutes
 
@@ -167,16 +168,34 @@ class HostileAnswerTest(PropertiesFlow):
     def answer(self, value, key="hostile"):
         return json.dumps({"results": [{"id": "7399", "key": key, "value": value, "version": {"number": 1}}], "_links": {}}).encode("utf-8")
 
-    def test_a_value_nested_deeper_than_what_is_shown_is_said_so_and_one_that_the_decoder_cannot_read_is_an_error_with_a_reason(self):
-        self.area.raw_answers.append(b'{"results":[{"id":"1","key":"deep","value":' + b"[" * 150 + b"]" * 150 + b',"version":{"number":1}}]}')
-        shown = self.cli("properties", "2005")
-        self.assertEqual(shown.code, 0, shown.err)
-        self.assertIn("[nested too deeply to show]", shown.out)
-        self.area.raw_answers.append(b'{"results":[{"id":"1","key":"deep","value":' + b"[" * 5000 + b"]" * 5000 + b',"version":{"number":1}}]}')
+    def deep_answer(self, levels):
+        return b'{"results":[{"id":"1","key":"deep","value":' + b"[" * levels + b"]" * levels + b',"version":{"number":1}}]}'
+
+    def assertRefusedForItsDepth(self, levels):
+        self.area.raw_answers.append(self.deep_answer(levels))
         refused = self.cli("properties", "2005")
         self.assertEqual((refused.code, refused.out), (7, ""))
         self.assertIn("nests arrays or objects too deeply", refused.err)
         self.assertNotIn("RecursionError", refused.err)
+
+    def test_a_value_nested_deeper_than_what_is_shown_is_said_so(self):
+        self.area.raw_answers.append(self.deep_answer(150))
+        shown = self.cli("properties", "2005")
+        self.assertEqual(shown.code, 0, shown.err)
+        self.assertIn("[nested too deeply to show]", shown.out)
+
+    def test_a_value_that_the_decoder_cannot_read_is_an_error_with_a_reason(self):
+        """Where the decoder gives up depends on the system and the version of Python (see `tests/support/deep_json.py`): here it is made to."""
+        with deep_json.giving_up():
+            self.assertRefusedForItsDepth(5000)
+
+    def test_where_the_decoder_of_this_python_gives_up_on_a_value_it_is_the_same(self):
+        levels = [depth for depth in (5000, 200_000) if deep_json.decoder_gives_up_on(self.deep_answer(depth))]
+        if not levels:
+            self.skipTest("the decoder of this Python reads both of these nestings")
+        for depth in levels:
+            with self.subTest(levels=depth):
+                self.assertRefusedForItsDepth(depth)
 
     def test_a_deep_value_that_is_in_the_way_of_a_change_is_replaced_and_not_compared(self):
         self.area.raw_answers.append(b'{"results":[{"id":"7399","key":"deep","value":' + b"[" * 150 + b"]" * 150 + b',"version":{"number":1}}]}')

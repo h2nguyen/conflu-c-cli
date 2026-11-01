@@ -134,7 +134,7 @@ creation, and the line is `Created the property KEY on the page ID.` without an 
   an exponent is kept as a 64-bit float, so `12345678901234567890.5` is sent as `1.2345678901234567e+19`; a whole number keeps all its digits. A text needs its own double quotes (`'"a text"'`); a bare word is a usage error
   that says so. **Windows PowerShell 5.1 removes the double quotes inside an argument**: put the value into a file and pass `--file value.json`; a pipe, `--file -`, works for
   ASCII only in that shell (it turns every other character into `?`). A file may be UTF-8, UTF-16 or Windows-1252. `1` and `1.0` are one number, and an object has no order of its keys, so neither makes a new version.
-  A negative number with an exponent (`-1e5`) must be written `--value=-1e5`: without the `=` the program takes it for an option.
+  A negative number with an exponent (`-1e5`) is written `--value=-1e5`: without the `=` the program takes it for an option (Python 3.14 reads it as a number, the versions before it do not).
 - **The key** holds letters, digits and `_ . : -` only, from 1 to 255 characters, and is case sensitive.
 - **What `conflu properties` shows is not always the value.** A reading hides people, cuts long values and leaves the title off the address of a page when the title holds an e-mail address. A new
   value that is a copy of such a reading is refused (exit code 1, nothing sent, also in a dry run): saving it would overwrite what the property holds, and no command may redact what Confluence holds.

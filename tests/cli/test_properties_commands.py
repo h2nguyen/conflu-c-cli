@@ -1,6 +1,7 @@
 """The commands `properties` and `property-set` on the command line, with the in-memory Confluence: what they print, what they refuse, how they are described."""
 import json
 import shlex
+import sys
 import unittest
 
 from conflu_c_cli.adapters.driving.cli.help import mcp_tool, render_command_help
@@ -378,8 +379,10 @@ class PropertySetTest(unittest.TestCase):
         self.assertEqual(run_cli("property-set", "2002", "--key", "n1", "--value=-1e5", gateway=gateway).code, 0)
         self.assertEqual(run_cli("property-set", "2002", "--key", "n2", "--value", "-5", gateway=gateway).code, 0)
         self.assertEqual(run_cli("property-set", "2002", "--key", "n3", "--value", "-1.5", gateway=gateway).code, 0)
-        self.assertEqual(run_cli("property-set", "2002", "--key", "n4", "--value", "-1e5", gateway=gateway).code, 2)  # the program takes it for an option: the guide says so
-        self.assertEqual({call[-1]["key"]: call[-1]["value"] for call in gateway.called("create_property")}, {"n1": -100000.0, "n2": -5, "n3": -1.5})
+        reads_it = sys.version_info >= (3, 14)  # argparse of Python 3.14 reads `-1e5` as a number; before it, the program takes it for an option: the guide says so
+        self.assertEqual(run_cli("property-set", "2002", "--key", "n4", "--value", "-1e5", gateway=gateway).code, 0 if reads_it else 2)
+        expected = {"n1": -100000.0, "n2": -5, "n3": -1.5, **({"n4": -100000.0} if reads_it else {})}
+        self.assertEqual({call[-1]["key"]: call[-1]["value"] for call in gateway.called("create_property")}, expected)
 
     def test_a_value_that_was_cut_is_refused_with_exit_code_1_and_the_way_to_the_whole_one_works(self):
         gateway = fresh()

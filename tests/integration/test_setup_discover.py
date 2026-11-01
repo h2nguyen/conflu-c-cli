@@ -18,6 +18,7 @@ from conflu_c_cli.application.settings import Settings
 from conflu_c_cli.domain.errors import ConfigError, UnavailableError
 from conflu_c_cli.version import __version__
 from tests.integration.test_end_to_end import EndToEnd
+from tests.support import deep_json
 from tests.support.public_certificates import CROSS_SIGNED, INTERMEDIATE
 
 GATEWAY = "https://api.atlassian.com/ex/confluence/"
@@ -195,15 +196,29 @@ class TenantInfoAnswersTest(unittest.TestCase):
                 self.assertIn(f"HTTP {status}", error.message)
                 self.assertIn("may not be a Confluence Cloud site", error.hint)
 
+    DEEP_BODIES = (b"[" * 60000, b"[" * 60000 + b"]" * 5000, b'{"a":' * 9000 + b"1" + b"}" * 9000)  # each one inside the limit of 64 KiB
+
+    def assertUnavailableForItsDepth(self, body):
+        with self.subTest(size=len(body)), _Site(body=body) as site:
+            self.assertLess(len(body), 64 * 1024)
+            error = self.refused(site, UnavailableError)
+            self.assertEqual(error.exit_code, 7)
+            self.assertIn("nests arrays or objects too deeply", error.message)
+            self.assertIn("may not be a Confluence Cloud site", error.hint)
+
     def test_an_answer_that_nests_too_deeply_to_be_read_is_unavailable_not_unexpected(self):
-        """Sixty thousand `[` are inside the limit of 64 KiB, and the decoder gives up long before the end of them."""
-        for body in (b"[" * 60000, b"[" * 60000 + b"]" * 5000, b'{"a":' * 9000 + b"1" + b"}" * 9000):
-            with self.subTest(size=len(body)), _Site(body=body) as site:
-                self.assertLess(len(body), 64 * 1024)
-                error = self.refused(site, UnavailableError)
-                self.assertEqual(error.exit_code, 7)
-                self.assertIn("nests arrays or objects too deeply", error.message)
-                self.assertIn("may not be a Confluence Cloud site", error.hint)
+        """Sixty thousand `[` are inside the limit of 64 KiB. The decoder gives up on them, as it does on any nesting that is deep enough: where that is
+        depends on the system and the version of Python, so the decoder is made to give up here."""
+        with deep_json.giving_up():
+            for body in self.DEEP_BODIES:
+                self.assertUnavailableForItsDepth(body)
+
+    def test_where_the_decoder_of_this_python_gives_up_on_the_nesting_it_is_the_same(self):
+        gives_up = [body for body in self.DEEP_BODIES if deep_json.decoder_gives_up_on(body)]
+        if not gives_up:
+            self.skipTest("the decoder of this Python reads all of these nestings")
+        for body in gives_up:
+            self.assertUnavailableForItsDepth(body)
 
     def test_a_server_error_is_unavailable_and_is_asked_again_first(self):
         with _Site(status=503, body=b"busy") as site:

@@ -27,6 +27,7 @@ from conflu_c_cli.domain.errors import AuthError, ConfigError, ConflictError, No
 from conflu_c_cli.domain.watches import CONTENT, SPACE, WatchChange
 from tests.integration.test_answer_limits import _Quiet
 from tests.integration.test_properties_flow import TYPES, PropertiesFlow
+from tests.support import deep_json
 from tests.support.mock_base import Routes
 from tests.support.sweeps import LOCAL
 from tests.support.sweeps_all import SWEEPS
@@ -297,14 +298,27 @@ class NotJsonTest(StubbedCase):
             self.gateway(answers).list_spaces()
         self.assertIn("login.example.com/sso", caught.exception.message)
 
-    def test_a_body_that_nests_too_deeply_is_still_told_so(self):
-        """The answer to JSON that nests deeper than the decoder reads is not the answer to JSON that is no JSON: its message and its details are as they were."""
-        answers = self.serve(b"[" * 5000 + b"]" * 5000, headers={"Content-Type": "application/json"})
+    def assertTooDeeplyNested(self, body):
+        answers = self.serve(body, headers={"Content-Type": "application/json"})
         with self.assertRaises(UnavailableError) as caught:
             self.gateway(answers).list_properties("page", "2002")
         self.assertEqual(caught.exception.message, "Confluence answered with JSON that nests arrays or objects too deeply to be read.")
         self.assertEqual(caught.exception.details, {"status": 200})
         self.assertIn("a content property", caught.exception.hint)
+
+    def test_a_body_that_nests_too_deeply_is_still_told_so(self):
+        """The answer to JSON that nests deeper than the decoder reads is not the answer to JSON that is no JSON: its message and its details are as they were.
+        Where the decoder gives up depends on the system and the version of Python (see `tests/support/deep_json.py`), so it is made to give up here."""
+        with deep_json.giving_up():
+            self.assertTooDeeplyNested(b"[" * 5000 + b"]" * 5000)
+
+    def test_where_the_decoder_of_this_python_gives_up_on_the_nesting_it_is_the_same(self):
+        bodies = [body for body in (b"[" * 5000 + b"]" * 5000, b"[" * 200_000 + b"]" * 200_000) if deep_json.decoder_gives_up_on(body)]
+        if not bodies:
+            self.skipTest("the decoder of this Python reads both of these nestings")
+        for body in bodies:
+            with self.subTest(levels=len(body) // 2):
+                self.assertTooDeeplyNested(body)
 
     def test_the_connection_and_the_doctor_are_not_fooled_by_the_page_of_a_proxy(self):
         answers = self.serve(PROXY_PAGE, headers=HTML)
